@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const eventsCapture = require('./main/events-capture');
 
 let mainWindow;
 
@@ -54,6 +55,18 @@ ipcMain.handle('open-folder', async () => {
   const dir = path.join(app.getPath('documents'), 'TicketScribe');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   shell.openPath(dir);
+});
+
+// Event-stream capture (window/app activity, terminal history, browser
+// history) -- see main/events-capture.js for the source-by-source detail.
+ipcMain.handle('events:start', (_e, opts) => {
+  eventsCapture.start(opts);
+});
+ipcMain.handle('events:stop', (_e, opts) => {
+  return eventsCapture.stop(opts);
+});
+ipcMain.handle('events:get-transcript-snippet', () => {
+  return eventsCapture.getTranscriptProfileSnippet();
 });
 
 app.whenReady().then(createWindow);

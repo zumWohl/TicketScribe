@@ -5,12 +5,15 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --inspect"
+    "dev": "electron . --inspect",
+    "rebuild": "electron-rebuild -f -w better-sqlite3"
   },
   "devDependencies": {
-    "electron": "^42.5.0"
+    "electron": "^42.5.0",
+    "@electron/rebuild": "^3.6.0"
   },
   "dependencies": {
+    "better-sqlite3": "^11.3.0",
     "tesseract.js": "^5.1.1"
   }
 }

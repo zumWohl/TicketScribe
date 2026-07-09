@@ -43,8 +43,45 @@
         <label for="s-threshold">Change threshold <span class="label-hint">(0–64)</span></label>
         <input id="s-threshold" type="number" min="1" max="64" placeholder="5">
       </div>
+      <div class="form-group">
+        <label for="s-summary-model">Summary model</label>
+        <select id="s-summary-model">
+          <option value="ollama">Ollama (local, default)</option>
+          <option value="claude">Claude (cloud)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="s-anthropic-key">Anthropic API key <span class="label-hint">(only used if Claude is selected)</span></label>
+        <input id="s-anthropic-key" type="password" placeholder="sk-ant-...">
+      </div>
     </div>
-    <button id="btn-save-settings" class="btn btn-sm btn-primary">Save settings</button>
+
+    <h4 class="card-title mt-16">Activity capture</h4>
+    <p class="card-hint">Alongside video: which tool was in focus, for how long, and what was on screen. Runs locally; all three feed into the same summary prompt after being scrubbed for client names and tenant IDs.</p>
+
+    <div class="form-group mt-12">
+      <label><input id="s-capture-window" type="checkbox"> Window/app activity</label>
+      <p class="card-hint">Primary source — tracks focused app + dwell time, coarsely categorized (remote/admin console/PSA/terminal).</p>
+    </div>
+
+    <div class="form-group mt-12">
+      <label><input id="s-capture-terminal" type="checkbox"> Terminal commands (PowerShell)</label>
+      <p class="card-hint">Captures locally-run PowerShell commands. Commands run inside RDP or remote sessions aren't seen — but the window-activity source above still shows that a remote session was focused, and for how long. cmd.exe sessions are visible as a focused window, not by command text.</p>
+      <label class="mt-12"><input id="s-transcript-enabled" type="checkbox"> Also capture command output (PowerShell transcript)</label>
+      <p class="card-hint">Writes a transcript file to your temp folder. Requires a one-time snippet in your PowerShell profile — <button id="btn-copy-transcript-snippet" class="btn btn-sm btn-outline" type="button">Copy setup snippet</button></p>
+    </div>
+
+    <div class="form-group mt-12">
+      <label><input id="s-capture-browser" type="checkbox"> Browser activity (Chrome/Edge)</label>
+      <p class="card-hint">Detects which admin portals and sites were used during the recording. The most sensitive source — turn off if not needed.</p>
+    </div>
+
+    <div class="form-group mt-12">
+      <label for="s-client-names">Client names to redact <span class="label-hint">(comma-separated)</span></label>
+      <input id="s-client-names" type="text" placeholder="Acme Corp, Northwind Finance">
+    </div>
+
+    <button id="btn-save-settings" class="btn btn-sm btn-primary mt-12">Save settings</button>
   </div>
 
   <!-- ── Views ────────────────────────────────────────────────────── -->
@@ -113,7 +150,7 @@
           <div class="step" id="step-vlm" data-n="2">
             <div class="step-circle"><span class="step-num">2</span></div>
             <div class="step-body">
-              <span class="step-title">VLM frame analysis</span>
+              <span class="step-title">Frame analysis</span>
               <span class="step-detail" id="detail-vlm">Waiting…</span>
             </div>
           </div>
@@ -125,6 +162,7 @@
             </div>
           </div>
         </div>
+        <button id="btn-use-raw-text" class="btn btn-outline mt-12 hidden">Use raw OCR text instead</button>
       </div>
     </div>
 

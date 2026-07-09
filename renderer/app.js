@@ -1,6 +1,8 @@
 // ─── Electron bridge ────────────────────────────────────────────────────────
 const { ipcRenderer } = require('electron');
 const { createWorker } = require('tesseract.js');
+const { providers } = require('./providers');
+const { scrubEvents } = require('./scrub-timeline');
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const CAPTURE_INTERVAL_MS = 1500;
@@ -9,16 +11,30 @@ const MAX_KEYFRAMES       = 60;
 
 // ─── Settings ───────────────────────────────────────────────────────────────
 function loadSettings() {
-  document.getElementById('s-ollama-url').value  = ls('ollamaUrl',  'http://localhost:11434');
-  document.getElementById('s-vlm-model').value   = ls('vlmModel',   'llava');
-  document.getElementById('s-text-model').value  = ls('textModel',  'llama3');
-  document.getElementById('s-threshold').value   = ls('threshold',  String(DEFAULT_THRESHOLD));
+  document.getElementById('s-ollama-url').value     = ls('ollamaUrl',  'http://localhost:11434');
+  document.getElementById('s-vlm-model').value      = ls('vlmModel',   'llava');
+  document.getElementById('s-text-model').value     = ls('textModel',  'llama3');
+  document.getElementById('s-threshold').value      = ls('threshold',  String(DEFAULT_THRESHOLD));
+  document.getElementById('s-summary-model').value  = ls('summaryModel', 'ollama');
+  document.getElementById('s-anthropic-key').value  = ls('anthropicApiKey', '');
+  document.getElementById('s-capture-window').checked   = ls('captureWindow', 'true') === 'true';
+  document.getElementById('s-capture-terminal').checked = ls('captureTerminal', 'true') === 'true';
+  document.getElementById('s-capture-browser').checked  = ls('captureBrowser', 'true') === 'true';
+  document.getElementById('s-transcript-enabled').checked = ls('transcriptEnabled', 'false') === 'true';
+  document.getElementById('s-client-names').value   = ls('scrubClientNames', '');
 }
 function saveSettings() {
-  set('ollamaUrl', document.getElementById('s-ollama-url').value.trim());
-  set('vlmModel',  document.getElementById('s-vlm-model').value.trim());
-  set('textModel', document.getElementById('s-text-model').value.trim());
-  set('threshold', document.getElementById('s-threshold').value.trim());
+  set('ollamaUrl',       document.getElementById('s-ollama-url').value.trim());
+  set('vlmModel',        document.getElementById('s-vlm-model').value.trim());
+  set('textModel',       document.getElementById('s-text-model').value.trim());
+  set('threshold',       document.getElementById('s-threshold').value.trim());
+  set('summaryModel',    document.getElementById('s-summary-model').value);
+  set('anthropicApiKey', document.getElementById('s-anthropic-key').value.trim());
+  set('captureWindow',     String(document.getElementById('s-capture-window').checked));
+  set('captureTerminal',   String(document.getElementById('s-capture-terminal').checked));
+  set('captureBrowser',    String(document.getElementById('s-capture-browser').checked));
+  set('transcriptEnabled', String(document.getElementById('s-transcript-enabled').checked));
+  set('scrubClientNames',  document.getElementById('s-client-names').value.trim());
 }
 const ls  = (k, d) => localStorage.getItem(k) || d;
 const set = (k, v) => localStorage.setItem(k, v);
@@ -42,6 +58,7 @@ let keyframes      = [];
 let lastHash       = null;
 let startTime      = 0;
 let currentTicket  = '';
+let activityTimelineText = '';
 
 // ─── perceptual average-hash (pure JS, OffscreenCanvas) ─────────────────────
 function aHash(sourceCanvas) {
@@ -154,46 +171,41 @@ async function runOCR(canvas) {
   }
 }
 
-// ─── Ollama helpers ──────────────────────────────────────────────────────────
-async function ollamaGenerate(payload) {
-  const url = ls('ollamaUrl', 'http://localhost:11434');
-  const res  = await fetch(`${url}/api/generate`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ ...payload, stream: false }),
-  });
-  if (!res.ok) throw new Error(`Ollama ${res.status}: ${await res.text()}`);
-  return (await res.json()).response.trim();
+// ─── Activity timeline (window/terminal/browser events, scrubbed) ─────────────
+// Events arrive already timestamp-sorted from main/events-capture.js. Window
+// entries carry dwell time and are the spine of the session -- formatting
+// them with their duration up front is what lets the model weight a 7-minute
+// focus differently from a 4-second alt-tab, without needing a separate
+// re-ordering pass (chronological order already keeps them interleaved).
+function formatDuration(ms) {
+  const s = Math.round((ms || 0) / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `${m}m ${rem}s` : `${m}m`;
 }
 
-async function describeFrame(dataUrl, ocrText) {
-  return ollamaGenerate({
-    model:  ls('vlmModel', 'llava'),
-    images: [dataUrl.split(',')[1]],
-    prompt: `You are reviewing a screenshot from an IT support engineer's screen.
-In 1–2 concise sentences, describe the specific action being performed.
-Include: which application is visible, what the engineer is doing, and any important text (commands, errors, account names).
-OCR context: "${ocrText.slice(0, 300)}"`,
-  });
+function formatActivityEvent(e) {
+  const t = new Date(e.timestamp).toLocaleTimeString();
+  if (e.type === 'window') {
+    const { processName, windowTitle, category, durationMs } = e.detail;
+    return `${t} (${formatDuration(durationMs)}) [${category}] ${windowTitle} (${processName})`;
+  }
+  if (e.type === 'terminal') {
+    if (e.detail.shell === 'powershell-transcript') {
+      return `${t} [terminal transcript: ${e.detail.file}]\n${e.detail.content}`;
+    }
+    return `${t} [terminal] ${e.detail.command}`;
+  }
+  if (e.type === 'browser') {
+    return `${t} [${e.detail.category}] ${e.detail.title || e.detail.url} (${e.detail.browser})`;
+  }
+  return `${t} ${JSON.stringify(e.detail)}`;
 }
 
-async function generateSummary(descriptions) {
-  const timeline = descriptions
-    .map((d, i) => `${i + 1}. [${new Date(d.timestamp).toLocaleTimeString()}] ${d.text}`)
-    .join('\n');
-
-  return ollamaGenerate({
-    model:  ls('textModel', 'llama3'),
-    prompt: `You are writing a professional work note for an IT support ticket.
-Below is a timestamped timeline of observed actions.
-Write a clear, past-tense, professional summary in 3–5 sentences suitable as a ticket note.
-Describe what was done and any outcomes. No bullet points.
-
-Timeline:
-${timeline}
-
-Work note:`,
-  });
+function buildActivityTimelineText(events) {
+  if (!events || events.length === 0) return '';
+  return events.map(formatActivityEvent).join('\n');
 }
 
 // ─── Step helpers ────────────────────────────────────────────────────────────
@@ -224,13 +236,19 @@ function resetSteps() {
 }
 
 // ─── Processing pipeline ─────────────────────────────────────────────────────
+// Ollama is the default provider and keeps its original two-step shape
+// (per-frame VLM description, then a text summary). Claude is an optional
+// cloud alternative that does both in a single call. Either way, a failure
+// must be visibly a failure -- never silently replaced with a raw OCR dump
+// dressed up as a finished summary. See showGenerationFailure().
 async function processPipeline() {
   setState('processing');
   resetSteps();
+  document.getElementById('btn-use-raw-text').classList.add('hidden');
 
-  const descriptions = [];
+  const providerId = ls('summaryModel', 'ollama');
 
-  // ── Step 1: OCR ──
+  // ── Step 1: OCR (always runs -- feeds both providers and the manual fallback) ──
   stepActive('step-ocr', `Running on ${keyframes.length} keyframe(s)…`);
   try {
     for (let i = 0; i < keyframes.length; i++) {
@@ -245,47 +263,82 @@ async function processPipeline() {
     stepDone('step-ocr', 'Completed with errors — continuing');
   }
 
+  const rawFallbackText = keyframes.map(k => k.ocrText).filter(Boolean).join('\n\n');
+
+  if (providerId === 'claude') {
+    await runClaudePipeline(rawFallbackText);
+  } else {
+    await runOllamaPipeline(rawFallbackText);
+  }
+}
+
+async function runOllamaPipeline(rawFallbackText) {
+  const descriptions = [];
+
   // ── Step 2: VLM ──
   stepActive('step-vlm', 'Connecting to Ollama…');
+  let lastVlmError = null;
   for (let i = 0; i < keyframes.length; i++) {
     document.getElementById('detail-vlm').textContent =
       `Frame ${i + 1} / ${keyframes.length}`;
     try {
-      const text = await describeFrame(keyframes[i].dataUrl, keyframes[i].ocrText);
+      const text = await providers.ollama.describeFrame(keyframes[i].dataUrl, keyframes[i].ocrText);
       descriptions.push({ timestamp: keyframes[i].timestamp, text });
     } catch (err) {
-      // Fall back to OCR text so the summary still has something to work with
-      if (keyframes[i].ocrText) {
-        descriptions.push({
-          timestamp: keyframes[i].timestamp,
-          text: `[OCR fallback] ${keyframes[i].ocrText.slice(0, 200)}`,
-        });
-      }
+      lastVlmError = err;
     }
   }
 
   if (descriptions.length === 0) {
-    stepError('step-vlm', 'No descriptions generated — is Ollama running?');
+    stepError('step-vlm', lastVlmError ? lastVlmError.message : 'No descriptions generated — is Ollama running?');
     stepError('step-sum', 'Skipped');
+    showGenerationFailure(rawFallbackText);
     return;
   }
   stepDone('step-vlm', `${descriptions.length} description(s) generated`);
 
   // ── Step 3: Summarise ──
-  stepActive('step-sum', 'Generating work note…');
-  let summary;
+  stepActive('step-sum', 'Generating with Ollama…');
   try {
-    summary = await generateSummary(descriptions);
+    const summary = await providers.ollama.generateSummary(descriptions, activityTimelineText);
     stepDone('step-sum', 'Done');
+    finishWithSummary(summary);
   } catch (err) {
     stepError('step-sum', err.message);
-    // Surface raw descriptions so the engineer still has something
-    summary = descriptions.map(d => d.text).join('\n\n');
+    showGenerationFailure(rawFallbackText || descriptions.map(d => d.text).join('\n\n'));
   }
+}
 
+async function runClaudePipeline(rawFallbackText) {
+  stepDone('step-vlm', 'Skipped — using Claude');
+  stepActive('step-sum', 'Generating with Claude…');
+  try {
+    const ocrTexts = keyframes.map(k => k.ocrText);
+    const summary = await providers.claude.generate(keyframes, ocrTexts, activityTimelineText);
+    stepDone('step-sum', 'Done');
+    finishWithSummary(summary);
+  } catch (err) {
+    stepError('step-sum', err.message);
+    showGenerationFailure(rawFallbackText);
+  }
+}
+
+function finishWithSummary(summary) {
   document.getElementById('summary-text').value = summary;
   document.getElementById('review-ticket-id').textContent = `#${currentTicket}`;
   setState('review');
+}
+
+// A generation failure must stay visibly a failure. This offers raw OCR text
+// as an explicit, separately-labeled opt-in -- never an automatic substitute.
+function showGenerationFailure(fallbackText) {
+  const btn = document.getElementById('btn-use-raw-text');
+  if (!fallbackText) {
+    btn.classList.add('hidden');
+    return;
+  }
+  btn.classList.remove('hidden');
+  btn.onclick = () => finishWithSummary(fallbackText);
 }
 
 // ─── Event wiring ────────────────────────────────────────────────────────────
@@ -297,6 +350,14 @@ document.getElementById('btn-settings').addEventListener('click', () => {
 document.getElementById('btn-save-settings').addEventListener('click', () => {
   saveSettings();
   document.getElementById('settings-panel').classList.add('hidden');
+});
+document.getElementById('btn-copy-transcript-snippet').addEventListener('click', async () => {
+  const snippet = await ipcRenderer.invoke('events:get-transcript-snippet');
+  await navigator.clipboard.writeText(snippet);
+  const btn = document.getElementById('btn-copy-transcript-snippet');
+  const original = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = original; }, 1500);
 });
 
 // Start recording
@@ -325,12 +386,30 @@ document.getElementById('btn-start').addEventListener('click', async () => {
 
   // Warm up the OCR worker in the background while recording
   ensureOCRWorker().catch(() => {});
+
+  // Kick off the event-stream capture (window/app activity, terminal
+  // history, browser history) alongside video -- see main/events-capture.js.
+  ipcRenderer.invoke('events:start', {
+    window: ls('captureWindow', 'true') === 'true',
+    transcript: ls('transcriptEnabled', 'false') === 'true',
+  }).catch(() => {});
 });
 
 // Stop recording
 document.getElementById('btn-stop').addEventListener('click', async () => {
   stopCapture();
   stopTimer();
+
+  let rawEvents = [];
+  try {
+    rawEvents = await ipcRenderer.invoke('events:stop', {
+      terminal: ls('captureTerminal', 'true') === 'true',
+      browserHistory: ls('captureBrowser', 'true') === 'true',
+    });
+  } catch {
+    rawEvents = [];
+  }
+  activityTimelineText = buildActivityTimelineText(scrubEvents(rawEvents));
 
   if (keyframes.length === 0) {
     alert('No keyframes were captured — the screen may not have changed enough.');
@@ -372,6 +451,7 @@ document.getElementById('btn-confirm').addEventListener('click', async () => {
 document.getElementById('btn-discard').addEventListener('click', () => {
   if (confirm('Discard this summary and return to idle?')) {
     keyframes = [];
+    activityTimelineText = '';
     setState('idle');
   }
 });
@@ -384,6 +464,7 @@ document.getElementById('btn-open-folder').addEventListener('click', () => {
 // New recording
 document.getElementById('btn-new').addEventListener('click', () => {
   keyframes = [];
+  activityTimelineText = '';
   document.getElementById('ticket-id').value = '';
   setState('idle');
 });
