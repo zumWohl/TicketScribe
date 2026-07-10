@@ -2,7 +2,7 @@
 const { ipcRenderer } = require('electron');
 const { createWorker } = require('tesseract.js');
 const { providers } = require('./providers');
-const { scrubEvents } = require('./scrub-timeline');
+const { scrubText, scrubEvents } = require('./scrub-timeline');
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const CAPTURE_INTERVAL_MS = 1500;
@@ -254,7 +254,10 @@ async function processPipeline() {
     for (let i = 0; i < keyframes.length; i++) {
       document.getElementById('detail-ocr').textContent =
         `Frame ${i + 1} / ${keyframes.length}`;
-      keyframes[i].ocrText = await runOCR(keyframes[i].canvas);
+      // Scrub right at the source -- everything downstream (the VLM's OCR
+      // context, the raw-OCR fallback text, Claude's per-frame captions)
+      // reads keyframes[i].ocrText, so this one call covers all of them.
+      keyframes[i].ocrText = scrubText(await runOCR(keyframes[i].canvas));
     }
     stepDone('step-ocr', `Done — ${keyframes.length} frame(s) scanned`);
   } catch (err) {
