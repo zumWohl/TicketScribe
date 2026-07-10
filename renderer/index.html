@@ -2,202 +2,399 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>TicketScribe</title>
+  <title>Cardonet Capture</title>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body data-state="idle">
+<body data-screen="work" data-stage="ready">
 
-  <!-- ── Header ──────────────────────────────────────────────────── -->
-  <header>
-    <div class="logo">
-      <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-        <rect x="1" y="1" width="20" height="20" rx="5" fill="#2f81f7" opacity="0.15" stroke="#2f81f7" stroke-width="1.5"/>
-        <path d="M6 7h10M6 11h10M6 15h6" stroke="#2f81f7" stroke-width="1.8" stroke-linecap="round"/>
-      </svg>
-      <span class="logo-text">TicketScribe</span>
+<div id="app">
+
+  <!-- ── Titlebar ──────────────────────────────────────────────────── -->
+  <div class="titlebar">
+    <div class="tb-dots"><span></span><span></span><span></span></div>
+    <div class="tb-brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Cardonet</span>
+      <span class="brand-sep"></span>
+      <span class="brand-sub">Capture</span>
     </div>
-    <button id="btn-settings" class="icon-btn" title="Settings">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M8 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/>
-        <path fill-rule="evenodd" d="M8 1a.75.75 0 0 1 .75.75v1.028a5.25 5.25 0 0 1 1.78.735l.727-.727a.75.75 0 1 1 1.06 1.06l-.727.727c.318.555.543 1.17.636 1.827H13.25a.75.75 0 0 1 0 1.5h-1.025a5.25 5.25 0 0 1-.735 1.78l.727.727a.75.75 0 1 1-1.06 1.06l-.727-.727a5.25 5.25 0 0 1-1.78.636v1.025a.75.75 0 0 1-1.5 0v-1.025a5.25 5.25 0 0 1-1.78-.636l-.727.727a.75.75 0 0 1-1.06-1.06l.727-.727A5.25 5.25 0 0 1 3.525 9.25H2.75a.75.75 0 0 1 0-1.5h.775a5.25 5.25 0 0 1 .636-1.827l-.727-.727a.75.75 0 0 1 1.06-1.06l.727.727A5.25 5.25 0 0 1 7 3.778V2.75A.75.75 0 0 1 8 1z" clip-rule="evenodd"/>
-      </svg>
+    <div class="tb-gradient"></div>
+    <button class="tb-halo is-disabled coming-soon" data-tip="Coming soon" aria-disabled="true">
+      <span class="dot"></span><span>HaloPSA not connected</span>
     </button>
-  </header>
-
-  <!-- ── Settings panel ──────────────────────────────────────────── -->
-  <div id="settings-panel" class="settings-panel hidden">
-    <div class="settings-grid">
-      <div class="form-group">
-        <label for="s-ollama-url">Ollama URL</label>
-        <input id="s-ollama-url" type="text" placeholder="http://localhost:11434">
-      </div>
-      <div class="form-group">
-        <label for="s-vlm-model">Vision model</label>
-        <input id="s-vlm-model" type="text" placeholder="llava">
-      </div>
-      <div class="form-group">
-        <label for="s-text-model">Text model</label>
-        <input id="s-text-model" type="text" placeholder="llama3">
-      </div>
-      <div class="form-group">
-        <label for="s-threshold">Change threshold <span class="label-hint">(0–64)</span></label>
-        <input id="s-threshold" type="number" min="1" max="64" placeholder="5">
-      </div>
-      <div class="form-group">
-        <label for="s-summary-model">Summary model</label>
-        <select id="s-summary-model">
-          <option value="ollama">Ollama (local, default)</option>
-          <option value="claude">Claude (cloud)</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="s-anthropic-key">Anthropic API key <span class="label-hint">(only used if Claude is selected)</span></label>
-        <input id="s-anthropic-key" type="password" placeholder="sk-ant-...">
-      </div>
-    </div>
-
-    <h4 class="card-title mt-16">Activity capture</h4>
-    <p class="card-hint">Alongside video: which tool was in focus, for how long, and what was on screen. Runs locally; all three feed into the same summary prompt after being scrubbed for client names and tenant IDs.</p>
-
-    <div class="form-group mt-12">
-      <label><input id="s-capture-window" type="checkbox"> Window/app activity</label>
-      <p class="card-hint">Primary source — tracks focused app + dwell time, coarsely categorized (remote/admin console/PSA/terminal).</p>
-    </div>
-
-    <div class="form-group mt-12">
-      <label><input id="s-capture-terminal" type="checkbox"> Terminal commands (PowerShell)</label>
-      <p class="card-hint">Captures locally-run PowerShell commands. Commands run inside RDP or remote sessions aren't seen — but the window-activity source above still shows that a remote session was focused, and for how long. cmd.exe sessions are visible as a focused window, not by command text.</p>
-      <label class="mt-12"><input id="s-transcript-enabled" type="checkbox"> Also capture command output (PowerShell transcript)</label>
-      <p class="card-hint">Writes a transcript file to your temp folder. Requires a one-time snippet in your PowerShell profile — <button id="btn-copy-transcript-snippet" class="btn btn-sm btn-outline" type="button">Copy setup snippet</button></p>
-    </div>
-
-    <div class="form-group mt-12">
-      <label><input id="s-capture-browser" type="checkbox"> Browser activity (Chrome/Edge)</label>
-      <p class="card-hint">Detects which admin portals and sites were used during the recording. The most sensitive source — turn off if not needed.</p>
-    </div>
-
-    <div class="form-group mt-12">
-      <label for="s-client-names">Client names to redact <span class="label-hint">(comma-separated)</span></label>
-      <input id="s-client-names" type="text" placeholder="Acme Corp, Northwind Finance">
-    </div>
-
-    <button id="btn-save-settings" class="btn btn-sm btn-primary mt-12">Save settings</button>
   </div>
 
-  <!-- ── Views ────────────────────────────────────────────────────── -->
-  <main>
+  <!-- ── Workspace ─────────────────────────────────────────────────── -->
+  <div class="workspace">
 
-    <!-- IDLE -->
-    <div class="view" id="view-idle">
-      <div class="card">
-        <div class="card-header">
-          <span class="status-dot"></span>
-          <span>Ready to record</span>
-        </div>
-        <p class="card-hint">Enter a ticket ID, then click Start. TicketScribe will capture your screen and generate a professional work note when you stop.</p>
-        <div class="form-group mt-16">
-          <label for="ticket-id">Ticket ID</label>
-          <input id="ticket-id" type="text" placeholder="e.g. 12345" autocomplete="off" spellcheck="false">
-        </div>
-        <button id="btn-start" class="btn btn-record mt-12">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="5"/></svg>
-          Start recording
-        </button>
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar">
+      <div class="side-head">
+        <span class="label">Assigned Tickets</span>
       </div>
-    </div>
-
-    <!-- RECORDING -->
-    <div class="view hidden" id="view-recording">
-      <div class="card">
-        <div class="card-header">
-          <span class="status-dot recording pulse"></span>
-          <span>Recording</span>
-          <span class="ticket-badge" id="rec-ticket-badge"></span>
+      <div class="side-tickets">
+        <div class="empty-card">
+          <div class="title">No tickets yet</div>
+          <p>Connect HaloPSA to pull in the tickets assigned to you. You can record and generate summaries without it.</p>
+          <button class="btn btn-pink btn-sm coming-soon is-disabled" style="width:100%; box-shadow:none;" data-tip="Coming soon" aria-disabled="true">Connect HaloPSA</button>
         </div>
-        <div class="stats-row">
-          <div class="stat">
-            <span class="stat-value mono" id="timer">00:00</span>
-            <span class="stat-label">elapsed</span>
-          </div>
-          <div class="stat">
-            <span class="stat-value mono" id="frame-count">0</span>
-            <span class="stat-label">keyframes</span>
-          </div>
-        </div>
-        <div class="preview-wrap">
-          <video id="capture-video" muted autoplay playsinline></video>
-          <div class="preview-label">Live preview</div>
-        </div>
-        <button id="btn-stop" class="btn btn-stop mt-12">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="1" y="1" width="12" height="12" rx="2"/></svg>
-          Stop recording
-        </button>
       </div>
-    </div>
 
-    <!-- PROCESSING -->
-    <div class="view hidden" id="view-processing">
-      <div class="card">
-        <h3 class="card-title">Processing session</h3>
-        <div class="steps">
-          <div class="step" id="step-ocr" data-n="1">
-            <div class="step-circle"><span class="step-num">1</span></div>
-            <div class="step-body">
-              <span class="step-title">OCR extraction</span>
-              <span class="step-detail" id="detail-ocr">Waiting…</span>
+      <nav class="side-nav">
+        <button class="nav-item active" id="nav-work">New Recording</button>
+        <button class="nav-item coming-soon is-disabled" data-tip="Coming soon" aria-disabled="true">Summary Templates</button>
+        <button class="nav-item" id="nav-settings">Settings</button>
+      </nav>
+
+      <div class="side-identity">
+        <span class="avatar">○</span>
+        <div class="who">Not connected to<br>HaloPSA</div>
+      </div>
+    </aside>
+
+    <!-- ===== Content ===== -->
+    <div class="content">
+
+      <!-- stepper (work screen only) -->
+      <div class="stepper" id="stepper">
+        <div class="step" data-step="0"><span class="step-num">1</span><span class="step-label">Record</span></div>
+        <span class="step-arrow">→</span>
+        <div class="step" data-step="1"><span class="step-num">2</span><span class="step-label">Review &amp; redact</span></div>
+        <span class="step-arrow">→</span>
+        <div class="step" data-step="2"><span class="step-num">3</span><span class="step-label">Summary</span></div>
+      </div>
+
+      <!-- ========== WORK SCREEN ========== -->
+      <div class="screen-work">
+        <div class="work-main">
+
+          <!-- ---- READY ---- -->
+          <section class="stage stage-ready">
+            <div>
+              <div class="eyebrow">New Resolution Recording</div>
+              <h4 class="title">Record a fix, get a ticket-ready summary</h4>
+              <p class="hero-note">Enter a ticket reference, choose what to capture, then start recording. Sensitive on-screen data is detected and masked before anything reaches the model — and you review every frame first.</p>
+            </div>
+
+            <div class="field">
+              <label for="ticket-id">Ticket reference</label>
+              <input id="ticket-id" type="text" placeholder="e.g. 48213" autocomplete="off" spellcheck="false">
+            </div>
+
+            <div class="spacer"></div>
+
+            <div class="setup-card">
+              <div>
+                <span class="setup-label">Capture Source</span>
+                <div class="source-grid">
+                  <button class="source-tile active" id="src-window" data-source="window">
+                    <span class="badge">Recommended</span>
+                    <span class="source-ico"></span>
+                    <div class="name">Single window</div>
+                    <div class="desc">One app only — sharper detection, no wallpaper or other windows in frame.</div>
+                  </button>
+                  <button class="source-tile" id="src-screen" data-source="screen">
+                    <span class="source-ico"></span>
+                    <div class="name">Entire screen</div>
+                    <div class="desc">The whole desktop, including other windows and notifications.</div>
+                  </button>
+                </div>
+                <div class="window-picker" id="window-picker">
+                  <span class="ico"><span></span></span>
+                  <div class="meta">
+                    <div class="cap">Window to capture</div>
+                    <select id="window-select"><option>Loading windows…</option></select>
+                  </div>
+                </div>
+              </div>
+              <div class="start-row">
+                <div class="protect-inline">
+                  <span class="check">✓</span>
+                  Sensitive data is detected and masked automatically — and you confirm redaction before anything is sent.
+                </div>
+                <button class="btn btn-pink btn-lg" id="btn-start">
+                  <span class="btn-rec-dot"></span>Start Recording
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ---- RECORDING ---- -->
+          <section class="stage stage-recording">
+            <div class="eyebrow red" id="rec-eyebrow">● Recording</div>
+            <h4 class="title" id="rec-title">Resolution recording</h4>
+            <div class="spacer"></div>
+            <div class="rec-center">
+              <span class="rec-pulse"></span>
+              <div class="rec-timer mono" id="timer">00:00</div>
+              <div class="rec-sub">Capturing keyframes · sensitive data masked on the fly</div>
+              <div class="rec-preview"><video id="capture-video" muted autoplay playsinline></video></div>
+              <div class="rec-stat-row">
+                <div class="rec-stat"><div class="v mono" id="frame-count">0</div><div class="k">keyframes</div></div>
+              </div>
+            </div>
+            <div class="spacer"></div>
+            <div style="display:flex; justify-content:center;">
+              <button class="btn btn-dark btn-lg" id="btn-stop"><span class="btn-stop-sq"></span>Stop &amp; review</button>
+            </div>
+          </section>
+
+          <!-- ---- REVIEW ---- -->
+          <section class="stage stage-review">
+            <div class="review-top">
+              <div style="flex:1;">
+                <div class="eyebrow">Confirm Redaction</div>
+                <h4 class="title">Review</h4>
+                <p class="subnote" style="margin:8px 0 0; max-width:560px;">Automatic detection masked the sensitive regions it found — the pink boxes on the frame. Scan every frame, drag to mask anything it missed, and adjust or remove any box before the frames reach the model.</p>
+              </div>
+              <span class="masked-badge"><span id="masked-total">0</span> regions masked</span>
+            </div>
+
+            <div class="frame-card">
+              <div class="frame-card-head">
+                <span class="cap">CAPTURED FRAMES · redacted preview</span>
+                <span class="pos" id="frame-pos">Frame 0 of 0</span>
+              </div>
+              <div class="draw-hint">
+                <span class="ico"></span>
+                <span><b>Drag on the frame</b> to mask anything the automatic pass missed. <span class="pink">Pink</span> boxes were detected automatically, <span class="navy">dashed</span> boxes are yours — drag any box to move it, pull a corner to resize, or ✕ to remove it.</span>
+              </div>
+
+              <div class="frame-surface">
+                <div class="frame-titlebar">
+                  <span class="dot"></span>
+                  <span class="ttl" id="frame-title">Frame</span>
+                  <button class="remove-frame-btn" id="btn-remove-frame"><span style="font-size:12px;line-height:1;">✕</span>Remove this frame</button>
+                </div>
+                <div class="frame-stage" id="frame-stage">
+                  <canvas class="preview-canvas hidden" id="preview-canvas"></canvas>
+                  <div class="frame-empty" id="frame-empty"><span class="mini-spin"></span> Scanning frames for sensitive data…</div>
+                  <div class="mask-overlay hidden" id="mask-overlay"></div>
+                </div>
+                <div class="frame-removed-overlay hidden" id="frame-removed-overlay">
+                  <div class="t">This frame will be dropped from the recording</div>
+                  <div class="d">Nothing from this frame is sent to the model. Use this when a frame is entirely sensitive.</div>
+                  <button class="btn btn-navy-ghost btn-sm" id="btn-restore-frame" style="background:#fff;">Keep this frame</button>
+                </div>
+                <div class="frame-caption">Redacted preview · original deleted after summary</div>
+              </div>
+
+              <div class="filmstrip-row">
+                <button class="fs-nav" id="btn-prev-frame">‹</button>
+                <div class="filmstrip" id="filmstrip"></div>
+                <button class="fs-nav" id="btn-next-frame">›</button>
+              </div>
+            </div>
+
+            <div class="review-disclaimer">Automatic detection is best-effort and bounded by detection accuracy — it is not a guarantee. Review every frame yourself, mask anything the automatic pass missed, and drop any frame that shouldn't be sent at all.</div>
+
+            <div class="review-actions">
+              <button class="btn btn-ghost btn-md" id="btn-discard">Discard</button>
+              <div class="modelline">Generating with <b id="review-model-name">Ollama</b></div>
+              <button class="btn btn-pink btn-md" id="btn-generate">Generate summary »</button>
+            </div>
+          </section>
+
+          <!-- ---- PROCESSING ---- -->
+          <section class="stage stage-processing">
+            <div class="proc-wrap">
+              <div class="eyebrow" id="proc-eyebrow">Working</div>
+              <h4 class="title">Turning your recording into a summary</h4>
+              <div class="progressbar"><div class="fill" id="progress-fill" style="width:0%"></div></div>
+              <div class="progress-meta"><span id="progress-label">Starting…</span><span class="pct" id="progress-pct">0%</span></div>
+              <div class="proc-steps" id="proc-steps">
+                <div class="proc-step" data-pstep="0"><span class="ico">1</span><span class="lbl">Reading on-screen text (OCR)</span></div>
+                <div class="proc-step" data-pstep="1"><span class="ico">2</span><span class="lbl">Applying redaction masks to frames</span></div>
+                <div class="proc-step" data-pstep="2"><span class="ico">3</span><span class="lbl" id="pstep-send-lbl">Sending redacted frames to the model</span></div>
+                <div class="proc-step" data-pstep="3"><span class="ico">4</span><span class="lbl">Generating summary from the frame sequence</span></div>
+              </div>
+              <button class="btn btn-ghost btn-sm hidden" id="btn-use-raw-text" style="margin-top:18px;">Use raw OCR text instead</button>
+            </div>
+          </section>
+
+          <!-- ---- SENT ---- -->
+          <section class="stage stage-sent">
+            <div class="sent-head">
+              <span class="check">✓</span>
+              <div>
+                <div class="eyebrow cyan" id="sent-eyebrow">Summary generated</div>
+                <h4 class="title" id="sent-heading">Ticket-ready work log</h4>
+              </div>
+            </div>
+            <div class="summary-card">
+              <div class="head">Resolution summary</div>
+              <textarea class="summary-text" id="summary-text" spellcheck="true"></textarea>
+            </div>
+            <div class="sent-privacy" id="sent-privacy">Detected secrets and any regions you masked were burned out of the frames before generation. Original full-resolution screenshots never left this device.</div>
+            <div class="save-note hidden" id="save-note"></div>
+            <div class="sent-actions">
+              <button class="btn btn-soft btn-md coming-soon is-disabled" data-tip="Coming soon" aria-disabled="true">Push to Ticket</button>
+              <button class="btn btn-navy-ghost btn-md" id="btn-save">Save to file</button>
+              <button class="btn btn-navy-ghost btn-md" id="btn-copy">Copy</button>
+              <button class="btn btn-ghost btn-md" id="btn-open-folder">Open folder</button>
+              <button class="btn btn-ghost btn-md" id="btn-new" style="margin-left:auto;">New recording</button>
+            </div>
+          </section>
+
+        </div>
+
+        <!-- ===== Right rail ===== -->
+        <aside class="rightrail">
+          <div>
+            <div class="rr-title">Summary Model</div>
+            <div class="model-list" id="model-list">
+              <button class="model-item" data-model="claude">
+                <span class="radio"></span>
+                <div class="grow"><div class="name">Claude</div><div class="sub">Sonnet · vision · cloud</div></div>
+                <span class="tag default">Default</span>
+              </button>
+              <button class="model-item active" data-model="ollama">
+                <span class="radio"></span>
+                <div class="grow"><div class="name">Run locally with Ollama</div><div class="sub">On-device vision + text models</div></div>
+                <span class="tag private">Private</span>
+              </button>
             </div>
           </div>
-          <div class="step" id="step-vlm" data-n="2">
-            <div class="step-circle"><span class="step-num">2</span></div>
-            <div class="step-body">
-              <span class="step-title">Frame analysis</span>
-              <span class="step-detail" id="detail-vlm">Waiting…</span>
+
+          <div class="rr-divider"></div>
+
+          <div>
+            <div class="rr-title row">Always Protected<span class="auto"><span class="dot"></span>Automatic</span></div>
+            <div class="protect-list">
+              <div class="protect-row"><span class="check">✓</span><span class="t">Passwords &amp; credential fields</span></div>
+              <div class="protect-row"><span class="check">✓</span><span class="t">API keys, tokens &amp; connection strings</span></div>
+              <div class="protect-row"><span class="check">✓</span><span class="t">Usernames, emails &amp; PII</span></div>
+            </div>
+            <div class="protect-foot">Detection runs on every recording before frames reach the model. It is best-effort and bounded by detection accuracy — not a guarantee. Review the flagged frames before you generate.</div>
+          </div>
+        </aside>
+      </div>
+
+      <!-- ========== SETTINGS SCREEN ========== -->
+      <div class="screen-settings">
+        <div class="settings-inner">
+          <div class="eyebrow">Settings</div>
+          <h4 class="title" style="margin-bottom:6px;">Integrations &amp; capture</h4>
+
+          <div class="settings-section-label">Summary Model Providers</div>
+          <div class="settings-card">
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="s-summary-model">Summary model</label>
+                <select id="s-summary-model">
+                  <option value="ollama">Ollama (local, default)</option>
+                  <option value="claude">Claude (cloud)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="s-anthropic-key">Anthropic API key <span class="hint">(Claude only)</span></label>
+                <input id="s-anthropic-key" type="password" placeholder="sk-ant-...">
+              </div>
+              <div class="form-group">
+                <label for="s-ollama-url">Ollama URL</label>
+                <input id="s-ollama-url" type="text" placeholder="http://localhost:11434">
+              </div>
+              <div class="form-group">
+                <label for="s-vlm-model">Vision model</label>
+                <input id="s-vlm-model" type="text" placeholder="llava">
+              </div>
+              <div class="form-group">
+                <label for="s-text-model">Text model</label>
+                <input id="s-text-model" type="text" placeholder="llama3">
+              </div>
+              <div class="form-group">
+                <label for="s-threshold">Change threshold <span class="hint">(0–64)</span></label>
+                <input id="s-threshold" type="number" min="1" max="64" placeholder="5">
+              </div>
             </div>
           </div>
-          <div class="step" id="step-sum" data-n="3">
-            <div class="step-circle"><span class="step-num">3</span></div>
-            <div class="step-body">
-              <span class="step-title">Generate summary</span>
-              <span class="step-detail" id="detail-sum">Waiting…</span>
+
+          <div class="settings-section-label">HaloPSA Connection</div>
+          <div class="settings-card">
+            <div class="setting-row">
+              <span class="swatch" style="background:var(--cn-gradient);"></span>
+              <div class="grow">
+                <div class="name">HaloPSA</div>
+                <div class="detail">Not connected — connectivity is coming soon. Recording and summaries work without it.</div>
+              </div>
+              <button class="btn btn-pink btn-sm coming-soon is-disabled" data-tip="Coming soon" aria-disabled="true" style="box-shadow:none;">Connect</button>
             </div>
           </div>
+
+          <div class="settings-section-label">Activity Capture</div>
+          <div class="settings-card">
+            <p style="font-size:12.5px; color:var(--slate); line-height:1.5; margin-bottom:4px;">Alongside video: which tool was in focus, for how long, and what was on screen. Runs locally; all sources feed the summary prompt after being scrubbed for client names and tenant IDs.</p>
+            <div class="check-row">
+              <input id="s-capture-window" type="checkbox">
+              <div class="body">
+                <label for="s-capture-window">Window / app activity</label>
+                <p>Primary source — tracks focused app + dwell time, coarsely categorized (remote / admin console / PSA / terminal).</p>
+              </div>
+            </div>
+            <div class="check-row">
+              <input id="s-capture-terminal" type="checkbox">
+              <div class="body">
+                <label for="s-capture-terminal">Terminal commands (PowerShell)</label>
+                <p>Captures locally-run PowerShell commands. Commands run inside RDP / remote sessions aren't seen — but the window-activity source still shows a remote session was focused, and for how long. cmd.exe is visible as a focused window, not by command text.</p>
+              </div>
+            </div>
+            <div class="check-row">
+              <input id="s-transcript-enabled" type="checkbox">
+              <div class="body">
+                <label for="s-transcript-enabled">Also capture command output (PowerShell transcript)</label>
+                <p>Writes a transcript file to your temp folder. Requires a one-time snippet in your PowerShell profile — <button id="btn-copy-transcript-snippet" class="btn btn-navy-ghost btn-sm" type="button" style="padding:4px 10px;">Copy setup snippet</button></p>
+              </div>
+            </div>
+            <div class="check-row">
+              <input id="s-capture-browser" type="checkbox">
+              <div class="body">
+                <label for="s-capture-browser">Browser activity (Chrome / Edge)</label>
+                <p>Detects which admin portals and sites were used during the recording. The most sensitive source — turn off if not needed.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section-label">Redaction</div>
+          <div class="settings-card">
+            <div class="form-grid">
+              <div class="form-group full">
+                <label for="s-client-names">Client names to redact <span class="hint">(comma-separated)</span></label>
+                <input id="s-client-names" type="text" placeholder="Acme Corp, Northwind Finance">
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:20px;">
+            <button class="btn btn-pink btn-md" id="btn-save-settings">Save settings</button>
+          </div>
         </div>
-        <button id="btn-use-raw-text" class="btn btn-outline mt-12 hidden">Use raw OCR text instead</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Overlays ──────────────────────────────────────────────────── -->
+  <div class="rec-outline hidden" id="rec-outline"></div>
+  <div class="rec-badge hidden" id="rec-badge"><span class="dot"></span>REC <span id="rec-badge-time" class="mono">00:00</span></div>
+
+  <div class="overlay hidden" id="countdown-overlay">
+    <div class="countdown-ring" id="countdown-ring">3</div>
+    <div class="countdown-sub" id="countdown-sub">Recording in…</div>
+    <button class="btn btn-ghost btn-sm" id="btn-cancel-countdown" style="margin-top:16px; background:rgba(255,255,255,.16); color:#fff;">Cancel</button>
+  </div>
+
+  <div class="modal-scrim hidden" id="duration-modal">
+    <div class="modal-card">
+      <div class="badge">⏱</div>
+      <h3>This is a long recording</h3>
+      <p>You've been recording for over 30 minutes. Long recordings capture more keyframes, which take longer to review and to summarise. Recording is still running — this is just a heads-up.</p>
+      <div class="modal-actions">
+        <button class="btn btn-pink btn-sm" id="btn-dismiss-duration">Got it, keep recording</button>
       </div>
     </div>
+  </div>
 
-    <!-- REVIEW -->
-    <div class="view hidden" id="view-review">
-      <div class="card">
-        <h3 class="card-title">Review summary</h3>
-        <p class="card-hint">Ticket <strong id="review-ticket-id"></strong> · Edit if needed before saving.</p>
-        <textarea id="summary-text" rows="11" spellcheck="true"></textarea>
-        <div class="btn-row mt-12">
-          <button id="btn-discard" class="btn btn-outline">Discard</button>
-          <button id="btn-confirm" class="btn btn-primary">Confirm &amp; save</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- DONE -->
-    <div class="view hidden" id="view-done">
-      <div class="card center">
-        <div class="check-ring">
-          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <path d="M6 14l6 6 10-12" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </div>
-        <h3 class="card-title mt-16">Summary saved</h3>
-        <p class="done-ticket">Ticket <strong id="done-ticket-id"></strong></p>
-        <p class="done-path" id="done-path"></p>
-        <div class="btn-row mt-16">
-          <button id="btn-open-folder" class="btn btn-outline">Open folder</button>
-          <button id="btn-new" class="btn btn-primary">New recording</button>
-        </div>
-      </div>
-    </div>
-
-  </main>
+</div>
 
   <script src="app.js"></script>
 </body>

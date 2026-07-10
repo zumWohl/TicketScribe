@@ -7,13 +7,13 @@ let mainWindow;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 480,
-    height: 780,
+    width: 1200,
+    height: 800,
     resizable: true,
-    minWidth: 420,
-    minHeight: 600,
-    title: 'TicketScribe',
-    backgroundColor: '#0d1117',
+    minWidth: 960,
+    minHeight: 660,
+    title: 'Cardonet Capture',
+    backgroundColor: '#EDECF0',
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -24,10 +24,13 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
-// Return screen sources so the renderer can pick one for getUserMedia
-ipcMain.handle('get-sources', async () => {
+// Return capture sources so the renderer can pick one for getUserMedia.
+// `types` selects screens (default) or individual windows -- the UI offers
+// an "Entire screen" vs "Single window" capture source choice.
+ipcMain.handle('get-sources', async (_e, opts) => {
+  const types = (opts && Array.isArray(opts.types) && opts.types.length) ? opts.types : ['screen'];
   const sources = await desktopCapturer.getSources({
-    types: ['screen'],
+    types,
     thumbnailSize: { width: 320, height: 180 },
   });
   return sources.map(s => ({

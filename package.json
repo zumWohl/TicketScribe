@@ -6,7 +6,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --inspect",
-    "rebuild": "electron-rebuild -f -w better-sqlite3"
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "test": "electron test/run-mask-verify.js"
   },
   "devDependencies": {
     "electron": "^42.5.0",

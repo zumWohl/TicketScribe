@@ -2,64 +2,103 @@
 const { ipcRenderer } = require('electron');
 const { createWorker } = require('tesseract.js');
 const { providers } = require('./providers');
-const { scrubText, scrubEvents } = require('./scrub-timeline');
+const { scrubText, scrubEvents, findSensitiveWords } = require('./scrub-timeline');
+const { maskAndDownscale, MODEL_IMAGE_MAX_DIMENSION } = require('./redact');
 
 // ─── Constants ──────────────────────────────────────────────────────────────
-const CAPTURE_INTERVAL_MS = 1500;
-const DEFAULT_THRESHOLD   = 5;    // hamming bits (0–64) – lower = more sensitive
-const MAX_KEYFRAMES       = 60;
-const MODEL_IMAGE_MAX_DIMENSION = 1280;  // long-edge cap for images sent to the VLM/Claude (OCR still reads the full-res canvas)
+const CAPTURE_INTERVAL_MS   = 1500;
+const DEFAULT_THRESHOLD     = 5;    // hamming bits (0–64) – lower = more sensitive
+const MASK_PADDING_PX       = 3;    // padding around auto-detected word boxes (full-res px)
+const DURATION_WARNING_MS   = 30 * 60 * 1000; // warn once past 30 minutes
+// NOTE: there is deliberately no keyframe cap — recordings run until stopped.
+// A long-running recording surfaces a dismissable warning instead (see below).
+
+const $ = (id) => document.getElementById(id);
 
 // ─── Settings ───────────────────────────────────────────────────────────────
-function loadSettings() {
-  document.getElementById('s-ollama-url').value     = ls('ollamaUrl',  'http://localhost:11434');
-  document.getElementById('s-vlm-model').value      = ls('vlmModel',   'llava');
-  document.getElementById('s-text-model').value     = ls('textModel',  'llama3');
-  document.getElementById('s-threshold').value      = ls('threshold',  String(DEFAULT_THRESHOLD));
-  document.getElementById('s-summary-model').value  = ls('summaryModel', 'ollama');
-  document.getElementById('s-anthropic-key').value  = ls('anthropicApiKey', '');
-  document.getElementById('s-capture-window').checked   = ls('captureWindow', 'true') === 'true';
-  document.getElementById('s-capture-terminal').checked = ls('captureTerminal', 'true') === 'true';
-  document.getElementById('s-capture-browser').checked  = ls('captureBrowser', 'true') === 'true';
-  document.getElementById('s-transcript-enabled').checked = ls('transcriptEnabled', 'false') === 'true';
-  document.getElementById('s-client-names').value   = ls('scrubClientNames', '');
-}
-function saveSettings() {
-  set('ollamaUrl',       document.getElementById('s-ollama-url').value.trim());
-  set('vlmModel',        document.getElementById('s-vlm-model').value.trim());
-  set('textModel',       document.getElementById('s-text-model').value.trim());
-  set('threshold',       document.getElementById('s-threshold').value.trim());
-  set('summaryModel',    document.getElementById('s-summary-model').value);
-  set('anthropicApiKey', document.getElementById('s-anthropic-key').value.trim());
-  set('captureWindow',     String(document.getElementById('s-capture-window').checked));
-  set('captureTerminal',   String(document.getElementById('s-capture-terminal').checked));
-  set('captureBrowser',    String(document.getElementById('s-capture-browser').checked));
-  set('transcriptEnabled', String(document.getElementById('s-transcript-enabled').checked));
-  set('scrubClientNames',  document.getElementById('s-client-names').value.trim());
-}
 const ls  = (k, d) => localStorage.getItem(k) || d;
 const set = (k, v) => localStorage.setItem(k, v);
 
-// ─── State machine ──────────────────────────────────────────────────────────
-// States: idle | recording | processing | review | done
-let appState = 'idle';
-
-function setState(s) {
-  appState = s;
-  document.body.dataset.state = s;
-  document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
-  document.getElementById(`view-${s}`).classList.remove('hidden');
+function loadSettings() {
+  $('s-ollama-url').value          = ls('ollamaUrl',  'http://localhost:11434');
+  $('s-vlm-model').value           = ls('vlmModel',   'llava');
+  $('s-text-model').value          = ls('textModel',  'llama3');
+  $('s-threshold').value           = ls('threshold',  String(DEFAULT_THRESHOLD));
+  $('s-summary-model').value       = ls('summaryModel', 'ollama');
+  $('s-anthropic-key').value       = ls('anthropicApiKey', '');
+  $('s-capture-window').checked    = ls('captureWindow', 'true') === 'true';
+  $('s-capture-terminal').checked  = ls('captureTerminal', 'true') === 'true';
+  $('s-capture-browser').checked   = ls('captureBrowser', 'true') === 'true';
+  $('s-transcript-enabled').checked = ls('transcriptEnabled', 'false') === 'true';
+  $('s-client-names').value        = ls('scrubClientNames', '');
+  applySummaryModel(ls('summaryModel', 'ollama'));
+}
+function saveSettings() {
+  set('ollamaUrl',       $('s-ollama-url').value.trim());
+  set('vlmModel',        $('s-vlm-model').value.trim());
+  set('textModel',       $('s-text-model').value.trim());
+  set('threshold',       $('s-threshold').value.trim());
+  set('summaryModel',    $('s-summary-model').value);
+  set('anthropicApiKey', $('s-anthropic-key').value.trim());
+  set('captureWindow',     String($('s-capture-window').checked));
+  set('captureTerminal',   String($('s-capture-terminal').checked));
+  set('captureBrowser',    String($('s-capture-browser').checked));
+  set('transcriptEnabled', String($('s-transcript-enabled').checked));
+  set('scrubClientNames',  $('s-client-names').value.trim());
+  applySummaryModel($('s-summary-model').value);
 }
 
-// ─── Recording state ────────────────────────────────────────────────────────
+// Keep the Settings dropdown, the right-rail model picker and the review
+// footer label in sync from one source of truth (localStorage.summaryModel).
+function applySummaryModel(id) {
+  set('summaryModel', id);
+  $('s-summary-model').value = id;
+  document.querySelectorAll('#model-list .model-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.model === id);
+  });
+  $('review-model-name').textContent = id === 'claude' ? 'Claude' : 'Ollama (local)';
+}
+
+// ─── Screen / stage machine ──────────────────────────────────────────────────
+// screen: work | settings.  stage (within work): ready | countdown | recording
+//         | review | processing | sent
+function setScreen(s) {
+  document.body.dataset.screen = s;
+  $('nav-work').classList.toggle('active', s === 'work');
+  $('nav-settings').classList.toggle('active', s === 'settings');
+}
+function setStage(s) {
+  document.body.dataset.stage = s;
+  updateStepper(s);
+}
+function updateStepper(stage) {
+  // step 0 Record · 1 Review & redact · 2 Summary
+  let active;
+  if (stage === 'review') active = 1;
+  else if (stage === 'processing' || stage === 'sent') active = 2;
+  else active = 0;
+  const allDone = stage === 'sent';
+  document.querySelectorAll('#stepper .step').forEach(el => {
+    const n = parseInt(el.dataset.step, 10);
+    el.classList.toggle('done', n < active || (allDone && n <= active));
+    el.classList.toggle('active', n === active && !allDone);
+  });
+}
+
+// ─── Recording state ──────────────────────────────────────────────────────────
 let stream         = null;
 let captureHandle  = null;
 let timerHandle    = null;
+let countdownHandle = null;
 let keyframes      = [];
 let lastHash       = null;
 let startTime      = 0;
 let currentTicket  = '';
 let activityTimelineText = '';
+let captureSource  = 'window';     // window | screen
+let durationWarned = false;
+
+const video = $('capture-video');
 
 // ─── perceptual average-hash (pure JS, OffscreenCanvas) ─────────────────────
 function aHash(sourceCanvas) {
@@ -68,42 +107,66 @@ function aHash(sourceCanvas) {
   const ctx  = off.getContext('2d');
   ctx.drawImage(sourceCanvas, 0, 0, SIZE, SIZE);
   const px = ctx.getImageData(0, 0, SIZE, SIZE).data;
-
   const grays = [];
   for (let i = 0; i < px.length; i += 4)
     grays.push(0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]);
-
   const mean = grays.reduce((a, b) => a + b, 0) / grays.length;
   return grays.map(g => (g >= mean ? 1 : 0));
 }
-
 function hamming(h1, h2) {
   let d = 0;
   for (let i = 0; i < h1.length; i++) if (h1[i] !== h2[i]) d++;
   return d;
 }
 
-// ─── Screen capture ──────────────────────────────────────────────────────────
-const video = document.getElementById('capture-video');
+// ─── Capture source selection ─────────────────────────────────────────────────
+async function populateWindows() {
+  const sel = $('window-select');
+  try {
+    const sources = await ipcRenderer.invoke('get-sources', { types: ['window'] });
+    if (!sources.length) {
+      sel.innerHTML = '<option value="">No capturable windows found</option>';
+      return;
+    }
+    sel.innerHTML = sources
+      .map(s => `<option value="${s.id}">${escapeHtml(s.name || s.id)}</option>`)
+      .join('');
+  } catch {
+    sel.innerHTML = '<option value="">Could not list windows</option>';
+  }
+}
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+async function resolveSourceId() {
+  if (captureSource === 'window') {
+    const id = $('window-select').value;
+    if (id) return id;
+    // fall through to picking the first window if the select is empty
+    const wins = await ipcRenderer.invoke('get-sources', { types: ['window'] });
+    if (wins.length) return wins[0].id;
+    throw new Error('No capturable window is available. Try "Entire screen" instead.');
+  }
+  const screens = await ipcRenderer.invoke('get-sources', { types: ['screen'] });
+  if (!screens.length) throw new Error('No screen sources found.');
+  return screens[0].id;
+}
 
 async function startCapture() {
-  const sources = await ipcRenderer.invoke('get-sources');
-  if (!sources.length) throw new Error('No screen sources found.');
-
-  // Primary screen is always sources[0]
+  const sourceId = await resolveSourceId();
   stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
       mandatory: {
         chromeMediaSource:   'desktop',
-        chromeMediaSourceId: sources[0].id,
+        chromeMediaSourceId: sourceId,
         maxWidth:            1920,
         maxHeight:           1080,
         maxFrameRate:        2,
       },
     },
   });
-
   video.srcObject = stream;
   await new Promise(r => { video.onloadedmetadata = r; });
   video.play();
@@ -112,7 +175,6 @@ async function startCapture() {
   lastHash  = null;
   captureHandle = setInterval(captureFrame, CAPTURE_INTERVAL_MS);
 }
-
 function stopCapture() {
   clearInterval(captureHandle);
   captureHandle = null;
@@ -121,27 +183,10 @@ function stopCapture() {
   video.srcObject = null;
 }
 
-// Downscales a full-res keyframe canvas before it's sent to a VLM/Claude --
-// OCR still runs against the original full-res canvas (kept separately), so
-// text-reading accuracy isn't affected. Only reduces size if it's actually
-// above the cap; a smaller-than-cap screen is sent as-is.
-function downscaleForModel(sourceCanvas) {
-  const { width, height } = sourceCanvas;
-  const longEdge = Math.max(width, height);
-  if (longEdge <= MODEL_IMAGE_MAX_DIMENSION) {
-    return sourceCanvas.toDataURL('image/jpeg', 0.75);
-  }
-  const scale = MODEL_IMAGE_MAX_DIMENSION / longEdge;
-  const out = document.createElement('canvas');
-  out.width = Math.round(width * scale);
-  out.height = Math.round(height * scale);
-  out.getContext('2d').drawImage(sourceCanvas, 0, 0, out.width, out.height);
-  return out.toDataURL('image/jpeg', 0.75);
-}
-
+// Each kept keyframe stores the pristine full-res canvas (used for OCR and as
+// the masking source). dataUrl is derived only at generation time, AFTER masks
+// are applied — see generateSummary(). masks[] are in full-res canvas pixels.
 function captureFrame() {
-  if (keyframes.length >= MAX_KEYFRAMES) return;
-
   const w = video.videoWidth  || 1280;
   const h = video.videoHeight || 720;
 
@@ -155,49 +200,54 @@ function captureFrame() {
 
   if (!lastHash || hamming(hash, lastHash) > threshold) {
     lastHash = hash;
-    // canvas (full-res) is kept for OCR; dataUrl (downscaled) is what
-    // actually gets sent to the VLM/Claude.
-    keyframes.push({ timestamp: Date.now(), canvas, dataUrl: downscaleForModel(canvas) });
-    document.getElementById('frame-count').textContent = keyframes.length;
+    keyframes.push({ timestamp: Date.now(), canvas, ocrText: '', ocrWords: [], masks: [], removed: false });
+    $('frame-count').textContent = keyframes.length;
   }
 }
 
 // ─── Timer ───────────────────────────────────────────────────────────────────
 function startTimer() {
   startTime = Date.now();
-  const el  = document.getElementById('timer');
+  durationWarned = false;
+  const el = $('timer');
+  const badge = $('rec-badge-time');
   timerHandle = setInterval(() => {
-    const s = Math.floor((Date.now() - startTime) / 1000);
-    el.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    const elapsed = Date.now() - startTime;
+    const s = Math.floor(elapsed / 1000);
+    const text = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    el.textContent = text;
+    badge.textContent = text;
+    if (!durationWarned && elapsed >= DURATION_WARNING_MS) {
+      durationWarned = true;
+      $('duration-modal').classList.remove('hidden'); // recording keeps running
+    }
   }, 1000);
 }
 function stopTimer() { clearInterval(timerHandle); timerHandle = null; }
 
-// ─── OCR worker ──────────────────────────────────────────────────────────────
+// ─── OCR worker ────────────────────────────────────────────────────────────────
 let ocrWorker = null;
-
 async function ensureOCRWorker() {
-  if (!ocrWorker) {
-    ocrWorker = await createWorker('eng', 1, { logger: () => {} });
-  }
+  if (!ocrWorker) ocrWorker = await createWorker('eng', 1, { logger: () => {} });
 }
-
 async function runOCR(canvas) {
   try {
     await ensureOCRWorker();
-    const { data: { text } } = await ocrWorker.recognize(canvas);
-    return text.replace(/\s+/g, ' ').trim().slice(0, 600);
+    const { data } = await ocrWorker.recognize(canvas);
+    const text = data.text.replace(/\s+/g, ' ').trim().slice(0, 600);
+    const words = (data.blocks || [])
+      .flatMap(b => b.paragraphs || [])
+      .flatMap(p => p.lines || [])
+      .flatMap(l => l.words || [])
+      .filter(w => w.text && w.text.trim())
+      .map(w => ({ text: w.text, bbox: w.bbox }));
+    return { text, words };
   } catch {
-    return '';
+    return { text: '', words: [] };
   }
 }
 
-// ─── Activity timeline (window/terminal/browser events, scrubbed) ─────────────
-// Events arrive already timestamp-sorted from main/events-capture.js. Window
-// entries carry dwell time and are the spine of the session -- formatting
-// them with their duration up front is what lets the model weight a 7-minute
-// focus differently from a 4-second alt-tab, without needing a separate
-// re-ordering pass (chronological order already keeps them interleaved).
+// ─── Activity timeline (unchanged formatting) ──────────────────────────────────
 function formatDuration(ms) {
   const s = Math.round((ms || 0) / 1000);
   if (s < 60) return `${s}s`;
@@ -205,7 +255,6 @@ function formatDuration(ms) {
   const rem = s % 60;
   return rem ? `${m}m ${rem}s` : `${m}m`;
 }
-
 function formatActivityEvent(e) {
   const t = new Date(e.timestamp).toLocaleTimeString();
   if (e.type === 'window') {
@@ -223,170 +272,513 @@ function formatActivityEvent(e) {
   }
   return `${t} ${JSON.stringify(e.detail)}`;
 }
-
 function buildActivityTimelineText(events) {
   if (!events || events.length === 0) return '';
   return events.map(formatActivityEvent).join('\n');
 }
 
-// ─── Step helpers ────────────────────────────────────────────────────────────
-function stepActive(id, detail) {
-  const el = document.getElementById(id);
-  el.dataset.status = 'active';
-  document.getElementById(`detail-${id.replace('step-', '')}`).textContent = detail;
-}
-function stepDone(id, detail) {
-  const el = document.getElementById(id);
-  el.dataset.status = 'done';
-  document.getElementById(`detail-${id.replace('step-', '')}`).textContent = detail;
-}
-function stepError(id, detail) {
-  const el = document.getElementById(id);
-  el.dataset.status = 'error';
-  document.getElementById(`detail-${id.replace('step-', '')}`).textContent = detail;
+// ═══════════════════════════════════════════════════════════════════════════
+//  REVIEW & REDACT
+// ═══════════════════════════════════════════════════════════════════════════
+let reviewIndex  = 0;
+let reviewReady  = false;
+let interaction  = null;   // { type:'draw'|'move'|'resize', maskId, handle, dx, dy, x0, y0 }
+let draftRect    = null;   // { x, y, w, h } in full-res canvas px
+
+// After Stop: OCR every frame, scrub its text, and seed auto-detected masks
+// (in full-res canvas coordinates) from the sensitive words Tesseract found.
+async function analyzeFrames() {
+  reviewReady = false;
+  const empty = $('frame-empty');
+  for (let i = 0; i < keyframes.length; i++) {
+    empty.innerHTML = `<span class="mini-spin"></span> Scanning frame ${i + 1} of ${keyframes.length} for sensitive data…`;
+    const { text, words } = await runOCR(keyframes[i].canvas);
+    keyframes[i].ocrText  = scrubText(text);
+    keyframes[i].ocrWords = words;
+    keyframes[i].masks    = autoMasksFor(keyframes[i]);
+  }
+  reviewReady = true;
+  reviewIndex = 0;
+  renderReview();
 }
 
-// Reset all steps to waiting
-function resetSteps() {
-  ['step-ocr', 'step-vlm', 'step-sum'].forEach(id => {
-    document.getElementById(id).dataset.status = 'waiting';
-  });
-  ['detail-ocr', 'detail-vlm', 'detail-sum'].forEach(id => {
-    document.getElementById(id).textContent = 'Waiting…';
+function autoMasksFor(kf) {
+  const c = kf.canvas;
+  return findSensitiveWords(kf.ocrWords).map((w, i) => {
+    const x = Math.max(0, w.bbox.x0 - MASK_PADDING_PX);
+    const y = Math.max(0, w.bbox.y0 - MASK_PADDING_PX);
+    const wd = Math.min(c.width  - x, (w.bbox.x1 - w.bbox.x0) + MASK_PADDING_PX * 2);
+    const ht = Math.min(c.height - y, (w.bbox.y1 - w.bbox.y0) + MASK_PADDING_PX * 2);
+    return { id: `auto-${kf.timestamp}-${i}`, x, y, w: wd, h: ht, auto: true };
   });
 }
 
-// ─── Processing pipeline ─────────────────────────────────────────────────────
-// Ollama is the default provider and keeps its original two-step shape
-// (per-frame VLM description, then a text summary). Claude is an optional
-// cloud alternative that does both in a single call. Either way, a failure
-// must be visibly a failure -- never silently replaced with a raw OCR dump
-// dressed up as a finished summary. See showGenerationFailure().
-async function processPipeline() {
-  setState('processing');
-  resetSteps();
-  document.getElementById('btn-use-raw-text').classList.add('hidden');
+function totalMaskCount() {
+  return keyframes.reduce((n, kf) => n + (kf.removed ? 0 : kf.masks.length), 0);
+}
+
+// Render the whole review view for the current frame.
+function renderReview() {
+  const total = keyframes.length;
+  $('masked-total').textContent = totalMaskCount();
+  $('frame-pos').textContent = total ? `Frame ${reviewIndex + 1} of ${total}` : 'No frames';
+  renderFilmstrip();
+
+  const kf = keyframes[reviewIndex];
+  const canvas = $('preview-canvas');
+  const empty  = $('frame-empty');
+  const overlay = $('mask-overlay');
+  const removedOverlay = $('frame-removed-overlay');
+
+  if (!reviewReady || !kf) {
+    canvas.classList.add('hidden');
+    overlay.classList.add('hidden');
+    removedOverlay.classList.add('hidden');
+    empty.classList.remove('hidden');
+    return;
+  }
+
+  $('frame-title').textContent = `Keyframe ${reviewIndex + 1} · ${new Date(kf.timestamp).toLocaleTimeString()}`;
+  empty.classList.add('hidden');
+  canvas.classList.remove('hidden');
+
+  burnPreview(kf);          // destructive masked render onto the preview canvas
+  removedOverlay.classList.toggle('hidden', !kf.removed);
+
+  if (kf.removed) {
+    overlay.classList.add('hidden');
+  } else {
+    overlay.classList.remove('hidden');
+    positionOverlay();
+    renderMaskBoxes(kf);
+  }
+}
+
+// Draw the frame scaled to fit, then destructively paint every mask on the
+// preview canvas itself — so no readable secret pixels are ever shown beneath a
+// box, even mid-drag (this is re-run on every mask change).
+function burnPreview(kf) {
+  const src = kf.canvas;
+  const stage = $('frame-stage');
+  const maxW = stage.clientWidth;
+  const maxH = stage.clientHeight;
+  const scale = Math.min(maxW / src.width, maxH / src.height, 1) || 1;
+  const dw = Math.max(1, Math.round(src.width * scale));
+  const dh = Math.max(1, Math.round(src.height * scale));
+
+  const canvas = $('preview-canvas');
+  canvas.width = dw;
+  canvas.height = dh;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(src, 0, 0, dw, dh);
+
+  // Fill masks in preview-space px (mask coords are full-res → scale down).
+  ctx.fillStyle = '#18161E';
+  for (const m of kf.masks) {
+    ctx.fillRect(m.x * scale, m.y * scale, m.w * scale, m.h * scale);
+  }
+}
+
+// Line up the interactive overlay exactly over the (centered) preview canvas.
+function positionOverlay() {
+  const canvas = $('preview-canvas');
+  const overlay = $('mask-overlay');
+  overlay.style.left   = canvas.offsetLeft + 'px';
+  overlay.style.top    = canvas.offsetTop + 'px';
+  overlay.style.width  = canvas.offsetWidth + 'px';
+  overlay.style.height = canvas.offsetHeight + 'px';
+}
+
+// Build the editable box DOM. Boxes are positioned as PERCENTAGES of the
+// full-res canvas dimensions, so they stay on-target across window resizes and
+// re-renders (canvas-space is the source of truth; display coords are derived).
+function renderMaskBoxes(kf) {
+  const overlay = $('mask-overlay');
+  overlay.innerHTML = '';
+  const cw = kf.canvas.width, ch = kf.canvas.height;
+
+  for (const m of kf.masks) {
+    const box = document.createElement('div');
+    box.className = 'mask-box ' + (m.auto ? 'auto' : 'user');
+    box.dataset.maskId = m.id;
+    applyBoxGeometry(box, m, cw, ch);
+
+    const tag = document.createElement('span');
+    tag.className = 'mask-tag';
+    tag.textContent = m.auto ? 'Auto' : 'Manual';
+    box.appendChild(tag);
+
+    const del = document.createElement('button');
+    del.className = 'mask-del';
+    del.textContent = '✕';
+    del.addEventListener('mousedown', (e) => e.stopPropagation());
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      kf.masks = kf.masks.filter(x => x.id !== m.id);
+      renderReview();
+    });
+    box.appendChild(del);
+
+    ['nw', 'ne', 'sw', 'se'].forEach(h => {
+      const handle = document.createElement('span');
+      handle.className = `mask-handle mh-${h}`;
+      handle.addEventListener('mousedown', (e) => beginResize(e, m.id, h));
+      box.appendChild(handle);
+    });
+
+    box.addEventListener('mousedown', (e) => beginMove(e, m.id));
+    overlay.appendChild(box);
+  }
+}
+
+function applyBoxGeometry(box, m, cw, ch) {
+  box.style.left   = (m.x / cw * 100) + '%';
+  box.style.top    = (m.y / ch * 100) + '%';
+  box.style.width  = (m.w / cw * 100) + '%';
+  box.style.height = (m.h / ch * 100) + '%';
+}
+
+function renderFilmstrip() {
+  const strip = $('filmstrip');
+  strip.innerHTML = '';
+  keyframes.forEach((kf, i) => {
+    const b = document.createElement('button');
+    b.className = 'fs-thumb' + (i === reviewIndex ? ' active' : '') + (kf.removed ? ' removed' : '');
+    b.innerHTML = `<div class="num">${i + 1}</div>`;
+    if (!kf.removed && kf.masks.length) {
+      const dot = document.createElement('span');
+      dot.className = 'marker';
+      b.appendChild(dot);
+    }
+    b.addEventListener('click', () => { reviewIndex = i; renderReview(); });
+    strip.appendChild(b);
+  });
+}
+
+// ── draw / move / resize (all in full-res canvas px) ──────────────────────────
+function pointerToCanvas(e) {
+  const kf = keyframes[reviewIndex];
+  const rect = $('mask-overlay').getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width  * kf.canvas.width;
+  const y = (e.clientY - rect.top)  / rect.height * kf.canvas.height;
+  return {
+    x: Math.max(0, Math.min(kf.canvas.width, x)),
+    y: Math.max(0, Math.min(kf.canvas.height, y)),
+  };
+}
+
+function beginDraw(e) {
+  if (e.button !== 0) return;
+  const p = pointerToCanvas(e);
+  interaction = { type: 'draw', x0: p.x, y0: p.y };
+  draftRect = { x: p.x, y: p.y, w: 0, h: 0 };
+  renderDraft();
+}
+function beginMove(e, id) {
+  if (e.button !== 0) return;
+  e.stopPropagation();
+  const kf = keyframes[reviewIndex];
+  const m = kf.masks.find(x => x.id === id);
+  const p = pointerToCanvas(e);
+  interaction = { type: 'move', maskId: id, dx: p.x - m.x, dy: p.y - m.y };
+}
+function beginResize(e, id, handle) {
+  if (e.button !== 0) return;
+  e.stopPropagation();
+  interaction = { type: 'resize', maskId: id, handle };
+}
+
+function onPointerMove(e) {
+  if (!interaction) return;
+  const kf = keyframes[reviewIndex];
+  const cw = kf.canvas.width, ch = kf.canvas.height;
+  const p = pointerToCanvas(e);
+  const MIN = Math.max(6, cw * 0.01);
+
+  if (interaction.type === 'draw') {
+    draftRect = {
+      x: Math.min(interaction.x0, p.x),
+      y: Math.min(interaction.y0, p.y),
+      w: Math.abs(p.x - interaction.x0),
+      h: Math.abs(p.y - interaction.y0),
+    };
+    renderDraft();
+    return;
+  }
+
+  const m = kf.masks.find(x => x.id === interaction.maskId);
+  if (!m) return;
+
+  if (interaction.type === 'move') {
+    m.x = Math.max(0, Math.min(cw - m.w, p.x - interaction.dx));
+    m.y = Math.max(0, Math.min(ch - m.h, p.y - interaction.dy));
+  } else if (interaction.type === 'resize') {
+    const h = interaction.handle;
+    let { x, y, w, ht } = { x: m.x, y: m.y, w: m.w, ht: m.h };
+    const right = x + w, bottom = y + ht;
+    if (h.includes('w')) { x = Math.min(p.x, right - MIN);  w = right - x; }
+    if (h.includes('e')) { w = Math.max(MIN, Math.min(cw, p.x) - x); }
+    if (h.includes('n')) { y = Math.min(p.y, bottom - MIN); ht = bottom - y; }
+    if (h.includes('s')) { ht = Math.max(MIN, Math.min(ch, p.y) - y); }
+    m.x = Math.max(0, x); m.y = Math.max(0, y);
+    m.w = Math.min(cw - m.x, w); m.h = Math.min(ch - m.y, ht);
+  }
+
+  // In-place update (no DOM rebuild during drag) + re-burn so pixels under the
+  // box's CURRENT position are always masked.
+  const box = document.querySelector(`.mask-box[data-mask-id="${cssEscape(m.id)}"]`);
+  if (box) applyBoxGeometry(box, m, cw, ch);
+  burnPreview(kf);
+}
+
+function onPointerUp() {
+  if (!interaction) return;
+  if (interaction.type === 'draw') {
+    const kf = keyframes[reviewIndex];
+    const d = draftRect;
+    const MIN = Math.max(6, kf.canvas.width * 0.01);
+    if (d && d.w > MIN && d.h > MIN) {
+      kf.masks.push({ id: `user-${Date.now()}`, x: d.x, y: d.y, w: d.w, h: d.h, auto: false });
+    }
+    draftRect = null;
+    interaction = null;
+    renderReview();
+    return;
+  }
+  interaction = null;
+  renderReview();  // rebuild for consistent state + counts
+}
+
+function renderDraft() {
+  const overlay = $('mask-overlay');
+  let el = overlay.querySelector('.mask-draft');
+  if (!draftRect) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.className = 'mask-draft'; overlay.appendChild(el); }
+  const kf = keyframes[reviewIndex];
+  el.style.left   = (draftRect.x / kf.canvas.width * 100) + '%';
+  el.style.top    = (draftRect.y / kf.canvas.height * 100) + '%';
+  el.style.width  = (draftRect.w / kf.canvas.width * 100) + '%';
+  el.style.height = (draftRect.h / kf.canvas.height * 100) + '%';
+  // keep preview masked while drafting (draft not yet a committed mask)
+  burnPreview(kf);
+}
+
+function cssEscape(s) { return String(s).replace(/["\\]/g, '\\$&'); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GENERATION PIPELINE
+// ═══════════════════════════════════════════════════════════════════════════
+function resetProcSteps() {
+  document.querySelectorAll('#proc-steps .proc-step').forEach(el => {
+    el.classList.remove('active', 'done');
+    const ico = el.querySelector('.ico');
+    ico.textContent = String(parseInt(el.dataset.pstep, 10) + 1);
+  });
+}
+function procStep(index, state) {
+  document.querySelectorAll('#proc-steps .proc-step').forEach(el => {
+    const n = parseInt(el.dataset.pstep, 10);
+    el.classList.remove('active', 'done');
+    const ico = el.querySelector('.ico');
+    if (n < index) { el.classList.add('done'); ico.textContent = '✓'; }
+    else if (n === index && state !== 'done') { el.classList.add('active'); ico.textContent = '◜'; }
+    else if (n === index && state === 'done') { el.classList.add('done'); ico.textContent = '✓'; }
+    else { ico.textContent = String(n + 1); }
+  });
+}
+function setProgress(pct, label) {
+  const p = Math.max(0, Math.min(100, Math.round(pct)));
+  $('progress-fill').style.width = p + '%';
+  $('progress-pct').textContent = p + '%';
+  if (label) $('progress-label').textContent = label;
+}
+
+// Compute the OCR text actually sent for a frame: any word whose bbox falls
+// under a mask (auto OR user-drawn) is dropped, then the rest is scrubbed. This
+// routes the raw-OCR/fallback text through the same redaction gate as the
+// pixels — a value the user masked can't leak back via the text channel.
+function maskedOcrText(kf) {
+  const words = kf.ocrWords || [];
+  if (!words.length) return kf.ocrText || '';
+  if (!kf.masks.length) return kf.ocrText || '';
+  const kept = words.filter(w => {
+    const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+    const cy = (w.bbox.y0 + w.bbox.y1) / 2;
+    return !kf.masks.some(m => cx >= m.x && cx <= m.x + m.w && cy >= m.y && cy <= m.y + m.h);
+  });
+  const text = kept.map(w => w.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 600);
+  return scrubText(text);
+}
+
+async function generateSummary() {
+  const live = keyframes.filter(kf => !kf.removed);
+  if (!live.length) {
+    alert('Every frame has been removed — there is nothing to send. Keep at least one frame or discard the recording.');
+    return;
+  }
+
+  setStage('processing');
+  resetProcSteps();
+  $('btn-use-raw-text').classList.add('hidden');
 
   const providerId = ls('summaryModel', 'ollama');
+  $('pstep-send-lbl').textContent = providerId === 'claude'
+    ? 'Sending redacted frames to Claude' : 'Sending redacted frames to Ollama';
 
-  // ── Step 1: OCR (always runs -- feeds both providers and the manual fallback) ──
-  stepActive('step-ocr', `Running on ${keyframes.length} keyframe(s)…`);
-  try {
-    for (let i = 0; i < keyframes.length; i++) {
-      document.getElementById('detail-ocr').textContent =
-        `Frame ${i + 1} / ${keyframes.length}`;
-      // Scrub right at the source -- everything downstream (the VLM's OCR
-      // context, the raw-OCR fallback text, Claude's per-frame captions)
-      // reads keyframes[i].ocrText, so this one call covers all of them.
-      keyframes[i].ocrText = scrubText(await runOCR(keyframes[i].canvas));
-    }
-    stepDone('step-ocr', `Done — ${keyframes.length} frame(s) scanned`);
-  } catch (err) {
-    stepError('step-ocr', err.message);
-    keyframes.forEach(kf => { kf.ocrText = kf.ocrText || ''; });
-    stepDone('step-ocr', 'Completed with errors — continuing');
-  }
+  // Step 0: OCR already ran in the review stage.
+  procStep(0, 'done');
+  setProgress(15, 'On-screen text already read');
 
-  const rawFallbackText = keyframes.map(k => k.ocrText).filter(Boolean).join('\n\n');
+  // Step 1: apply masks destructively on full-res, then downscale. Build light
+  // send-objects that hold NO canvas references, so we can free the big
+  // keyframe canvases immediately afterwards.
+  procStep(1);
+  setProgress(30, 'Applying redaction masks to frames');
+  const sendFrames = live.map(kf => ({
+    timestamp: kf.timestamp,
+    dataUrl: maskAndDownscale(kf.canvas, kf.masks),
+    ocrText: maskedOcrText(kf),
+  }));
+  const rawFallbackText = sendFrames.map(f => f.ocrText).filter(Boolean).join('\n\n');
+  procStep(1, 'done');
+
+  // Free full-res canvases now (see CLAUDE.md memory note) — review is over.
+  keyframes = [];
+
+  procStep(2);
+  setProgress(45, 'Sending redacted frames to the model');
 
   if (providerId === 'claude') {
-    await runClaudePipeline(rawFallbackText);
+    await runClaudePipeline(sendFrames, rawFallbackText);
   } else {
-    await runOllamaPipeline(rawFallbackText);
+    await runOllamaPipeline(sendFrames, rawFallbackText);
   }
 }
 
-async function runOllamaPipeline(rawFallbackText) {
+async function runOllamaPipeline(sendFrames, rawFallbackText) {
   const descriptions = [];
-
-  // ── Step 2: VLM ──
-  stepActive('step-vlm', 'Connecting to Ollama…');
   let lastVlmError = null;
-  for (let i = 0; i < keyframes.length; i++) {
-    document.getElementById('detail-vlm').textContent =
-      `Frame ${i + 1} / ${keyframes.length}`;
+  for (let i = 0; i < sendFrames.length; i++) {
+    setProgress(45 + (i / sendFrames.length) * 35, `Describing frame ${i + 1} of ${sendFrames.length}`);
     try {
-      const text = await providers.ollama.describeFrame(keyframes[i].dataUrl, keyframes[i].ocrText);
-      descriptions.push({ timestamp: keyframes[i].timestamp, text });
+      const text = await providers.ollama.describeFrame(sendFrames[i].dataUrl, sendFrames[i].ocrText);
+      descriptions.push({ timestamp: sendFrames[i].timestamp, text });
     } catch (err) {
       lastVlmError = err;
     }
   }
 
   if (descriptions.length === 0) {
-    stepError('step-vlm', lastVlmError ? lastVlmError.message : 'No descriptions generated — is Ollama running?');
-    stepError('step-sum', 'Skipped');
-    showGenerationFailure(rawFallbackText);
+    procStep(2); // leave send step spinning-as-error context
+    setProgress(80, 'Frame analysis failed');
+    showGenerationFailure(lastVlmError ? lastVlmError.message : 'No descriptions generated — is Ollama running?', rawFallbackText);
     return;
   }
-  stepDone('step-vlm', `${descriptions.length} description(s) generated`);
-
-  // ── Step 3: Summarise ──
-  stepActive('step-sum', 'Generating with Ollama…');
+  procStep(3);
+  setProgress(85, 'Generating summary from the frame sequence');
   try {
     const summary = await providers.ollama.generateSummary(descriptions, activityTimelineText);
-    stepDone('step-sum', 'Done');
+    procStep(3, 'done');
+    setProgress(100, 'Done');
     finishWithSummary(summary);
   } catch (err) {
-    stepError('step-sum', err.message);
-    showGenerationFailure(rawFallbackText || descriptions.map(d => d.text).join('\n\n'));
+    showGenerationFailure(err.message, rawFallbackText || descriptions.map(d => d.text).join('\n\n'));
   }
 }
 
-async function runClaudePipeline(rawFallbackText) {
-  stepDone('step-vlm', 'Skipped — using Claude');
-  stepActive('step-sum', 'Generating with Claude…');
+async function runClaudePipeline(sendFrames, rawFallbackText) {
+  procStep(3);
+  setProgress(70, 'Generating summary with Claude');
   try {
-    const ocrTexts = keyframes.map(k => k.ocrText);
-    const summary = await providers.claude.generate(keyframes, ocrTexts, activityTimelineText);
-    stepDone('step-sum', 'Done');
+    const ocrTexts = sendFrames.map(f => f.ocrText);
+    const summary = await providers.claude.generate(sendFrames, ocrTexts, activityTimelineText);
+    procStep(3, 'done');
+    setProgress(100, 'Done');
     finishWithSummary(summary);
   } catch (err) {
-    stepError('step-sum', err.message);
-    showGenerationFailure(rawFallbackText);
+    showGenerationFailure(err.message, rawFallbackText);
   }
 }
 
 function finishWithSummary(summary) {
-  document.getElementById('summary-text').value = summary;
-  document.getElementById('review-ticket-id').textContent = `#${currentTicket}`;
-  setState('review');
+  $('summary-text').value = summary;
+  $('sent-heading').textContent = currentTicket ? `Ticket-ready work log for #${currentTicket}` : 'Ticket-ready work log';
+  $('sent-eyebrow').textContent = `Summary generated · ${ls('summaryModel', 'ollama') === 'claude' ? 'Claude' : 'Ollama'}`;
+  $('save-note').classList.add('hidden');
+  setStage('sent');
 }
 
-// A generation failure must stay visibly a failure. This offers raw OCR text
-// as an explicit, separately-labeled opt-in -- never an automatic substitute.
-function showGenerationFailure(fallbackText) {
-  const btn = document.getElementById('btn-use-raw-text');
-  if (!fallbackText) {
-    btn.classList.add('hidden');
-    return;
-  }
+// A generation failure stays visibly a failure. The raw-OCR opt-in is
+// separately labeled and only ever surfaces text that has ALREADY passed
+// through the redaction gate (mask-dropped words + scrubText).
+function showGenerationFailure(message, fallbackText) {
+  setProgress(100, `Generation failed: ${message}`);
+  $('proc-eyebrow').textContent = 'Generation failed';
+  const btn = $('btn-use-raw-text');
+  if (!fallbackText) { btn.classList.add('hidden'); return; }
   btn.classList.remove('hidden');
   btn.onclick = () => finishWithSummary(fallbackText);
 }
 
-// ─── Event wiring ────────────────────────────────────────────────────────────
+// ─── Reset helpers ─────────────────────────────────────────────────────────
+function resetToReady() {
+  keyframes = [];
+  activityTimelineText = '';
+  reviewReady = false;
+  reviewIndex = 0;
+  interaction = null;
+  draftRect = null;
+  $('frame-count').textContent = '0';
+  $('timer').textContent = '00:00';
+  $('proc-eyebrow').textContent = 'Working';
+  $('save-note').classList.add('hidden');
+  setStage('ready');
+}
 
-// Settings toggle
-document.getElementById('btn-settings').addEventListener('click', () => {
-  document.getElementById('settings-panel').classList.toggle('hidden');
+// ═══════════════════════════════════════════════════════════════════════════
+//  EVENT WIRING
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Nav
+$('nav-work').addEventListener('click', () => setScreen('work'));
+$('nav-settings').addEventListener('click', () => setScreen('settings'));
+
+// Coming-soon guards: any element flagged coming-soon does nothing on click.
+document.querySelectorAll('.coming-soon').forEach(el => {
+  el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
 });
-document.getElementById('btn-save-settings').addEventListener('click', () => {
-  saveSettings();
-  document.getElementById('settings-panel').classList.add('hidden');
-});
-document.getElementById('btn-copy-transcript-snippet').addEventListener('click', async () => {
+
+// Settings
+$('btn-save-settings').addEventListener('click', () => { saveSettings(); setScreen('work'); });
+$('btn-copy-transcript-snippet').addEventListener('click', async () => {
   const snippet = await ipcRenderer.invoke('events:get-transcript-snippet');
   await navigator.clipboard.writeText(snippet);
-  const btn = document.getElementById('btn-copy-transcript-snippet');
+  const btn = $('btn-copy-transcript-snippet');
   const original = btn.textContent;
   btn.textContent = 'Copied!';
   setTimeout(() => { btn.textContent = original; }, 1500);
 });
+$('s-summary-model').addEventListener('change', () => applySummaryModel($('s-summary-model').value));
 
-// Start recording
-document.getElementById('btn-start').addEventListener('click', async () => {
-  const input = document.getElementById('ticket-id');
+// Right-rail model picker
+document.querySelectorAll('#model-list .model-item').forEach(el => {
+  el.addEventListener('click', () => applySummaryModel(el.dataset.model));
+});
+
+// Capture source tiles
+$('src-window').addEventListener('click', () => selectSource('window'));
+$('src-screen').addEventListener('click', () => selectSource('screen'));
+function selectSource(kind) {
+  captureSource = kind;
+  $('src-window').classList.toggle('active', kind === 'window');
+  $('src-screen').classList.toggle('active', kind === 'screen');
+  $('window-picker').style.display = kind === 'window' ? 'flex' : 'none';
+  if (kind === 'window') populateWindows();
+}
+
+// Start recording → countdown → capture
+$('btn-start').addEventListener('click', () => {
+  const input = $('ticket-id');
   currentTicket = input.value.trim();
   if (!currentTicket) {
     input.classList.add('error');
@@ -394,35 +786,71 @@ document.getElementById('btn-start').addEventListener('click', async () => {
     return;
   }
   input.classList.remove('error');
+  startCountdown();
+});
+$('ticket-id').addEventListener('input', () => $('ticket-id').classList.remove('error'));
 
+function startCountdown() {
+  setStage('countdown');
+  $('countdown-overlay').classList.remove('hidden');
+  $('countdown-sub').textContent = `Recording ${captureSource === 'window' ? 'the selected window' : 'the entire screen'} in…`;
+  let n = 3;
+  $('countdown-ring').textContent = n;
+  clearInterval(countdownHandle);
+  countdownHandle = setInterval(() => {
+    n -= 1;
+    if (n <= 0) {
+      clearInterval(countdownHandle);
+      $('countdown-overlay').classList.add('hidden');
+      beginRecording();
+    } else {
+      const ring = $('countdown-ring');
+      ring.textContent = n;
+      // retrigger the pop animation
+      ring.style.animation = 'none';
+      // eslint-disable-next-line no-unused-expressions
+      ring.offsetHeight;
+      ring.style.animation = '';
+    }
+  }, 800);
+}
+$('btn-cancel-countdown').addEventListener('click', () => {
+  clearInterval(countdownHandle);
+  $('countdown-overlay').classList.add('hidden');
+  setStage('ready');
+});
+
+async function beginRecording() {
   try {
     await startCapture();
   } catch (err) {
     alert(`Could not start capture:\n${err.message}`);
+    setStage('ready');
     return;
   }
-
-  document.getElementById('rec-ticket-badge').textContent = `#${currentTicket}`;
-  document.getElementById('frame-count').textContent = '0';
-  document.getElementById('timer').textContent = '00:00';
+  $('rec-title').textContent = currentTicket ? `Resolution recording · #${currentTicket}` : 'Resolution recording';
+  $('frame-count').textContent = '0';
+  $('timer').textContent = '00:00';
+  $('rec-outline').classList.remove('hidden');
+  $('rec-badge').classList.remove('hidden');
   startTimer();
-  setState('recording');
+  setStage('recording');
 
-  // Warm up the OCR worker in the background while recording
   ensureOCRWorker().catch(() => {});
 
-  // Kick off the event-stream capture (window/app activity, terminal
-  // history, browser history) alongside video -- see main/events-capture.js.
   ipcRenderer.invoke('events:start', {
     window: ls('captureWindow', 'true') === 'true',
     transcript: ls('transcriptEnabled', 'false') === 'true',
   }).catch(() => {});
-});
+}
 
-// Stop recording
-document.getElementById('btn-stop').addEventListener('click', async () => {
+// Stop recording → analyze → review
+$('btn-stop').addEventListener('click', async () => {
   stopCapture();
   stopTimer();
+  $('rec-outline').classList.add('hidden');
+  $('rec-badge').classList.add('hidden');
+  $('duration-modal').classList.add('hidden');
 
   let rawEvents = [];
   try {
@@ -430,74 +858,81 @@ document.getElementById('btn-stop').addEventListener('click', async () => {
       terminal: ls('captureTerminal', 'true') === 'true',
       browserHistory: ls('captureBrowser', 'true') === 'true',
     });
-  } catch {
-    rawEvents = [];
-  }
+  } catch { rawEvents = []; }
   activityTimelineText = buildActivityTimelineText(scrubEvents(rawEvents));
 
   if (keyframes.length === 0) {
     alert('No keyframes were captured — the screen may not have changed enough.');
-    setState('idle');
+    setStage('ready');
     return;
   }
 
-  await processPipeline();
+  setStage('review');
+  renderReview();      // shows the scanning spinner
+  analyzeFrames();     // async: OCR + auto-mask, then re-renders
 });
 
-// Confirm summary → save
-document.getElementById('btn-confirm').addEventListener('click', async () => {
-  const summary = document.getElementById('summary-text').value.trim();
-  if (!summary) return;
+// Duration warning dismiss (recording keeps running)
+$('btn-dismiss-duration').addEventListener('click', () => $('duration-modal').classList.add('hidden'));
 
-  const filename = `ticket-${currentTicket}-${Date.now()}.txt`;
-  const content  = [
-    'TicketScribe Work Note',
+// Review controls
+$('btn-prev-frame').addEventListener('click', () => { if (reviewIndex > 0) { reviewIndex--; renderReview(); } });
+$('btn-next-frame').addEventListener('click', () => { if (reviewIndex < keyframes.length - 1) { reviewIndex++; renderReview(); } });
+$('btn-remove-frame').addEventListener('click', () => { if (keyframes[reviewIndex]) { keyframes[reviewIndex].removed = true; renderReview(); } });
+$('btn-restore-frame').addEventListener('click', () => { if (keyframes[reviewIndex]) { keyframes[reviewIndex].removed = false; renderReview(); } });
+$('btn-generate').addEventListener('click', () => generateSummary());
+$('btn-discard').addEventListener('click', () => {
+  if (confirm('Discard this recording and return to the start?')) resetToReady();
+});
+
+// draw-to-mask: pointer down on the empty overlay begins a draft
+$('mask-overlay').addEventListener('mousedown', (e) => {
+  if (e.target === $('mask-overlay')) beginDraw(e);
+});
+window.addEventListener('mousemove', onPointerMove);
+window.addEventListener('mouseup', onPointerUp);
+window.addEventListener('resize', () => {
+  if (document.body.dataset.stage === 'review' && reviewReady) renderReview();
+});
+
+// Sent controls
+$('btn-save').addEventListener('click', async () => {
+  const summary = $('summary-text').value.trim();
+  if (!summary) return;
+  const filename = `ticket-${currentTicket || 'general'}-${Date.now()}.txt`;
+  // Deliberately no date/time in the note body or header (per spec).
+  const content = [
+    'Cardonet Capture — Work Note',
     '='.repeat(40),
-    `Ticket:  #${currentTicket}`,
-    `Date:    ${new Date().toLocaleString()}`,
+    `Ticket:  #${currentTicket || '(none)'}`,
     '',
     summary,
     '',
   ].join('\n');
-
   const result = await ipcRenderer.invoke('save-summary', { filename, content });
+  const note = $('save-note');
   if (!result.ok) {
-    alert(`Save failed: ${result.error}`);
+    note.classList.remove('hidden');
+    note.style.color = 'var(--cn-red)';
+    note.textContent = `Save failed: ${result.error}`;
     return;
   }
-
-  document.getElementById('done-ticket-id').textContent = `#${currentTicket}`;
-  document.getElementById('done-path').textContent = result.path;
-  setState('done');
+  note.classList.remove('hidden');
+  note.style.color = '';
+  note.textContent = `Saved to ${result.path}`;
 });
-
-// Discard summary
-document.getElementById('btn-discard').addEventListener('click', () => {
-  if (confirm('Discard this summary and return to idle?')) {
-    keyframes = [];
-    activityTimelineText = '';
-    setState('idle');
-  }
+$('btn-copy').addEventListener('click', async () => {
+  await navigator.clipboard.writeText($('summary-text').value);
+  const btn = $('btn-copy');
+  const original = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = original; }, 1500);
 });
-
-// Open folder
-document.getElementById('btn-open-folder').addEventListener('click', () => {
-  ipcRenderer.invoke('open-folder');
-});
-
-// New recording
-document.getElementById('btn-new').addEventListener('click', () => {
-  keyframes = [];
-  activityTimelineText = '';
-  document.getElementById('ticket-id').value = '';
-  setState('idle');
-});
-
-// Remove error class on input change
-document.getElementById('ticket-id').addEventListener('input', () => {
-  document.getElementById('ticket-id').classList.remove('error');
-});
+$('btn-open-folder').addEventListener('click', () => ipcRenderer.invoke('open-folder'));
+$('btn-new').addEventListener('click', () => { $('ticket-id').value = ''; resetToReady(); });
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 loadSettings();
-setState('idle');
+selectSource('window');
+setScreen('work');
+setStage('ready');
