@@ -8,6 +8,7 @@ const { scrubText, scrubEvents } = require('./scrub-timeline');
 const CAPTURE_INTERVAL_MS = 1500;
 const DEFAULT_THRESHOLD   = 5;    // hamming bits (0–64) – lower = more sensitive
 const MAX_KEYFRAMES       = 60;
+const MODEL_IMAGE_MAX_DIMENSION = 1280;  // long-edge cap for images sent to the VLM/Claude (OCR still reads the full-res canvas)
 
 // ─── Settings ───────────────────────────────────────────────────────────────
 function loadSettings() {
@@ -120,6 +121,24 @@ function stopCapture() {
   video.srcObject = null;
 }
 
+// Downscales a full-res keyframe canvas before it's sent to a VLM/Claude --
+// OCR still runs against the original full-res canvas (kept separately), so
+// text-reading accuracy isn't affected. Only reduces size if it's actually
+// above the cap; a smaller-than-cap screen is sent as-is.
+function downscaleForModel(sourceCanvas) {
+  const { width, height } = sourceCanvas;
+  const longEdge = Math.max(width, height);
+  if (longEdge <= MODEL_IMAGE_MAX_DIMENSION) {
+    return sourceCanvas.toDataURL('image/jpeg', 0.75);
+  }
+  const scale = MODEL_IMAGE_MAX_DIMENSION / longEdge;
+  const out = document.createElement('canvas');
+  out.width = Math.round(width * scale);
+  out.height = Math.round(height * scale);
+  out.getContext('2d').drawImage(sourceCanvas, 0, 0, out.width, out.height);
+  return out.toDataURL('image/jpeg', 0.75);
+}
+
 function captureFrame() {
   if (keyframes.length >= MAX_KEYFRAMES) return;
 
@@ -136,7 +155,9 @@ function captureFrame() {
 
   if (!lastHash || hamming(hash, lastHash) > threshold) {
     lastHash = hash;
-    keyframes.push({ timestamp: Date.now(), canvas, dataUrl: canvas.toDataURL('image/jpeg', 0.75) });
+    // canvas (full-res) is kept for OCR; dataUrl (downscaled) is what
+    // actually gets sent to the VLM/Claude.
+    keyframes.push({ timestamp: Date.now(), canvas, dataUrl: downscaleForModel(canvas) });
     document.getElementById('frame-count').textContent = keyframes.length;
   }
 }

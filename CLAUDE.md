@@ -23,7 +23,7 @@ TicketScribe is an Electron app with a strict two-process split enforced by Elec
 
 **Renderer process (`renderer/`)** — Chromium, runs with `nodeIntegration: true` / `contextIsolation: false` so it can `require()` Node modules directly. All application logic lives here:
 
-1. **Capture** (`startCapture` / `captureFrame`) — calls `ipcRenderer.invoke('get-sources')` to get the source ID, then `navigator.mediaDevices.getUserMedia` with `chromeMediaSource: 'desktop'`. A `setInterval` at 1500ms draws the live `<video>` to a canvas.
+1. **Capture** (`startCapture` / `captureFrame`) — calls `ipcRenderer.invoke('get-sources')` to get the source ID, then `navigator.mediaDevices.getUserMedia` with `chromeMediaSource: 'desktop'`. A `setInterval` at 1500ms draws the live `<video>` to a canvas (native resolution, capped at 1920×1080 by the `getUserMedia` constraints). Each kept keyframe stores **two** representations: the full-res `canvas` (used for OCR, where pixel density matters for reading small text) and a separately downscaled `dataUrl` (`downscaleForModel()`, long edge capped at `MODEL_IMAGE_MAX_DIMENSION = 1280`, same aspect ratio) — that's the one actually sent to the VLM/Claude. Don't downscale the `canvas` field itself; OCR accuracy depends on it staying full-res.
 
 2. **Frame deduplication** (`aHash` / `hamming`) — pure-JS average perceptual hash over an 8×8 `OffscreenCanvas` downscale. A frame is only kept as a keyframe when its Hamming distance from the previous kept frame exceeds the configured threshold (default 5 bits out of 64).
 
