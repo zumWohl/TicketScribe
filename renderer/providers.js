@@ -24,14 +24,43 @@ Rules:
 - Describe only what is directly evidenced -- do not infer problems, causes, or intentions that aren't shown.
 - Omit incidental details (browser/OS notifications, prompts unrelated to the work, the screen-recording tool itself) unless clearly part of the work performed.
 - Never repeat passwords, API keys, tokens, or other credentials verbatim; refer to them generically (e.g. "entered a password").
+- Never describe masked or redacted fields as "obscured," "hidden," "blurred," or otherwise implying the value was partially visible -- describe only that the field was present and filled in (e.g. "entered values into the Password and Username fields"), since the underlying value was never seen.
+- Before writing bullets, group all observations that describe the same underlying action, window, or UI state into a single bullet. Only start a new bullet when the user has moved to a genuinely different action, window, or step -- do not produce multiple bullets that redescribe one moment from slightly different angles.
 Return only the bullet list -- no heading, no preamble, no closing sentence.`;
+
+// A user-selected Summary Template (managed on the Templates screen) layers
+// EXTRA instructions on top of SUMMARY_RULES -- it never replaces the baseline.
+// Read from the same localStorage the rest of the app's settings use:
+// `activeTemplateId` ('' = none) picks one entry out of `summaryTemplates`.
+function activeTemplateContent() {
+  try {
+    const id = localStorage.getItem('activeTemplateId') || '';
+    if (!id) return '';
+    const list = JSON.parse(localStorage.getItem('summaryTemplates') || '[]');
+    const t = Array.isArray(list) ? list.find(x => x && x.id === id) : null;
+    return t && t.content ? String(t.content).trim() : '';
+  } catch { return ''; }
+}
+
+// The single point where the baseline rules and the optional template are
+// combined. Baseline first (and explicitly given precedence), template appended
+// after as additional instructions. With no template selected this returns the
+// baseline SUMMARY_RULES verbatim, so generation is unchanged from the default.
+function summaryInstructions() {
+  const tpl = activeTemplateContent();
+  if (!tpl) return SUMMARY_RULES;
+  return `${SUMMARY_RULES}
+
+Additional instructions for this summary (apply these on top of the rules above -- if anything here conflicts with the rules above, the rules above win):
+${tpl}`;
+}
 
 function buildTimelinePrompt(descriptions, activityTimelineText) {
   const timeline = descriptions
     .map((d, i) => `${i + 1}. ${d.text}`)
     .join('\n');
   return `You are writing the resolution work note for an IT support ticket, based on a timeline of observed on-screen actions${activityTimelineText ? ', plus an activity timeline of the tools used' : ''}.
-${SUMMARY_RULES}
+${summaryInstructions()}
 
 Observed actions:
 ${timeline}
@@ -121,7 +150,7 @@ OCR context: "${ocrText.slice(0, 300)}"`,
       content.push({
         type: 'text',
         text: `You are writing the resolution work note for an IT support ticket, based on the redacted screenshots above${activityTimelineText ? ' and the activity timeline below' : ''}.
-${SUMMARY_RULES}${activityTimelineText ? `\n\nActivity timeline:\n${activityTimelineText}` : ''}
+${summaryInstructions()}${activityTimelineText ? `\n\nActivity timeline:\n${activityTimelineText}` : ''}
 
 Work note:`,
       });

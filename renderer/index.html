@@ -40,7 +40,7 @@
 
       <nav class="side-nav">
         <button class="nav-item active" id="nav-work">New Recording</button>
-        <button class="nav-item coming-soon is-disabled" data-tip="Coming soon" aria-disabled="true">Summary Templates</button>
+        <button class="nav-item" id="nav-templates">Summary Templates</button>
         <button class="nav-item" id="nav-settings">Settings</button>
       </nav>
 
@@ -57,7 +57,7 @@
       <div class="stepper" id="stepper">
         <div class="step" data-step="0"><span class="step-num">1</span><span class="step-label">Record</span></div>
         <span class="step-arrow">→</span>
-        <div class="step" data-step="1"><span class="step-num">2</span><span class="step-label">Review &amp; redact</span></div>
+        <div class="step" data-step="1"><span class="step-num">2</span><span class="step-label">Review</span></div>
         <span class="step-arrow">→</span>
         <div class="step" data-step="2"><span class="step-num">3</span><span class="step-label">Summary</span></div>
       </div>
@@ -71,7 +71,7 @@
             <div>
               <div class="eyebrow">New Resolution Recording</div>
               <h4 class="title">Record a fix, get a ticket-ready summary</h4>
-              <p class="hero-note">Choose what to capture, then start recording. Sensitive on-screen data is detected and masked before anything reaches the model — and you review every frame first.</p>
+              <p class="hero-note">Choose what to capture, then start recording!</p>
             </div>
 
             <div class="spacer"></div>
@@ -84,7 +84,7 @@
                     <span class="badge">Recommended</span>
                     <span class="source-ico"></span>
                     <div class="name">Single window</div>
-                    <div class="desc">One app only — sharper detection, no wallpaper or other windows in frame.</div>
+                    <div class="desc">One app only - sharper detection, no wallpaper or other windows in frame.</div>
                   </button>
                   <button class="source-tile" id="src-screen" data-source="screen">
                     <span class="source-ico"></span>
@@ -110,7 +110,7 @@
               <div class="start-row">
                 <div class="protect-inline">
                   <span class="check">✓</span>
-                  Sensitive data is detected and masked automatically — and you confirm redaction before anything is sent.
+                  Sensitive data is detected and masked automatically, and you confirm redaction before anything is sent.
                 </div>
                 <button class="btn btn-pink btn-lg" id="btn-start">
                   <span class="btn-rec-dot"></span>Start Recording
@@ -145,7 +145,7 @@
               <div style="flex:1;">
                 <div class="eyebrow">Confirm Redaction</div>
                 <h4 class="title">Review</h4>
-                <p class="subnote" style="margin:8px 0 0; max-width:560px;">Automatic detection masked the sensitive regions it found — the pink boxes on the frame. Scan every frame, drag to mask anything it missed, and adjust or remove any box before the frames reach the model.</p>
+                <p class="subnote" style="margin:8px 0 0; max-width:560px;">Check every captured frame, drag to mask anything the automatic pass missed, and adjust or remove any frame before they reach the model.</p>
               </div>
               <span class="masked-badge"><span id="masked-total">0</span> regions masked</span>
             </div>
@@ -163,7 +163,7 @@
               </div>
               <div class="draw-hint">
                 <span class="ico"></span>
-                <span><b>Drag on the frame</b> to mask anything the automatic pass missed. <span class="pink">Pink</span> boxes were detected automatically, <span class="navy">dashed</span> boxes are yours — drag any box to move it, pull a corner to resize, or ✕ to remove it.</span>
+                <span><b>Drag on the frame</b> to mask anything the automatic pass missed. <span class="pink">Pink</span> boxes were detected automatically, <span class="navy">dashed</span> boxes are yours. Drag any box to move it, pull a corner to resize, or ✕ to remove it.</span>
               </div>
 
               <div class="frame-surface">
@@ -192,7 +192,7 @@
               </div>
             </div>
 
-            <div class="review-disclaimer">Automatic detection is best-effort and bounded by detection accuracy — it is not a guarantee. Review every frame yourself, mask anything the automatic pass missed, and drop any frame that shouldn't be sent at all.</div>
+            <div class="review-disclaimer">Automatic detection is best-effort and bounded by detection accuracy, it is not a guarantee. Review every frame yourself, mask anything the automatic pass missed, and drop any frame that shouldn't be sent at all.</div>
 
             <div class="review-actions">
               <button class="btn btn-ghost btn-md" id="btn-discard">Discard</button>
@@ -281,7 +281,7 @@
               <div class="protect-row"><span class="check">✓</span><span class="t">API keys, tokens &amp; connection strings</span></div>
               <div class="protect-row"><span class="check">✓</span><span class="t">Usernames, emails &amp; PII</span></div>
             </div>
-            <div class="protect-foot">Detection runs on every recording before frames reach the model. It is best-effort and bounded by detection accuracy — not a guarantee. Review the flagged frames before you generate.</div>
+            <div class="protect-foot">Detection runs on every recording before frames reach the model. It is best-effort and bounded by detection accuracy, not a guarantee. Review the flagged frames before you generate.</div>
           </div>
         </aside>
       </div>
@@ -348,7 +348,7 @@
               <span class="swatch" style="background:var(--cn-gradient);"></span>
               <div class="grow">
                 <div class="name">HaloPSA</div>
-                <div class="detail">Not connected — connectivity is coming soon. Recording and summaries work without it.</div>
+                <div class="detail">Not connected - connectivity is coming soon. Recording and summaries work without it.</div>
               </div>
               <button class="btn btn-pink btn-sm coming-soon is-disabled" data-tip="Coming soon" aria-disabled="true" style="box-shadow:none;">Connect</button>
             </div>
@@ -361,28 +361,28 @@
               <input id="s-capture-window" type="checkbox">
               <div class="body">
                 <label for="s-capture-window">Window / app activity</label>
-                <p>Primary source — tracks focused app + dwell time, coarsely categorized (remote / admin console / PSA / terminal).</p>
+                <p>Primary source - tracks focused app + dwell time, coarsely categorized (remote / admin console / PSA / terminal).</p>
               </div>
             </div>
             <div class="check-row">
               <input id="s-capture-terminal" type="checkbox">
               <div class="body">
                 <label for="s-capture-terminal">Terminal commands (PowerShell)</label>
-                <p>Captures locally-run PowerShell commands. Commands run inside RDP / remote sessions aren't seen — but the window-activity source still shows a remote session was focused, and for how long. cmd.exe is visible as a focused window, not by command text.</p>
+                <p>Captures locally-run PowerShell commands. Commands run inside RDP / remote sessions aren't seen, but the window-activity source still shows a remote session was focused, and for how long. cmd.exe is visible as a focused window, not by command text.</p>
               </div>
             </div>
             <div class="check-row">
               <input id="s-transcript-enabled" type="checkbox">
               <div class="body">
                 <label for="s-transcript-enabled">Also capture command output (PowerShell transcript)</label>
-                <p>Writes a transcript file to your temp folder. Requires a one-time snippet in your PowerShell profile — <button id="btn-copy-transcript-snippet" class="btn btn-navy-ghost btn-sm" type="button" style="padding:4px 10px;">Copy setup snippet</button></p>
+                <p>Writes a transcript file to your temp folder. Requires a one-time snippet in your PowerShell profile - <button id="btn-copy-transcript-snippet" class="btn btn-navy-ghost btn-sm" type="button" style="padding:4px 10px;">Copy setup snippet</button></p>
               </div>
             </div>
             <div class="check-row">
               <input id="s-capture-browser" type="checkbox">
               <div class="body">
                 <label for="s-capture-browser">Browser activity (Chrome / Edge)</label>
-                <p>Detects which admin portals and sites were used during the recording. The most sensitive source — turn off if not needed.</p>
+                <p>Detects which admin portals and sites were used during the recording. The most sensitive source - turn off if not needed.</p>
               </div>
             </div>
           </div>
@@ -399,6 +399,44 @@
 
           <div style="margin-top:20px;">
             <button class="btn btn-pink btn-md" id="btn-save-settings">Save settings</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== TEMPLATES SCREEN ========== -->
+      <div class="screen-templates">
+        <div class="templates-inner">
+          <div class="eyebrow">Summary Templates</div>
+          <h4 class="title" style="margin-bottom:6px;">Summary Templates</h4>
+          <p class="subnote" style="max-width:640px;">Layer extra instructions for the AI summary to follow.</p>
+
+          <div class="tpl-grid">
+            <div>
+              <div class="settings-section-label">Your Templates</div>
+              <div class="tpl-list" id="tpl-list"><!-- rendered by app.js --></div>
+              <button class="btn btn-navy-ghost btn-sm" id="tpl-new" style="margin-top:10px;">+ New template</button>
+            </div>
+
+            <div>
+              <div class="settings-section-label" id="tpl-editor-label">New template</div>
+              <div class="settings-card">
+                <div class="form-group">
+                  <label for="tpl-title">Title</label>
+                  <input id="tpl-title" type="text" placeholder="e.g. Printer troubleshooting note" autocomplete="off" spellcheck="false">
+                </div>
+                <div class="form-group" style="margin-top:12px;">
+                  <label for="tpl-content">Content <span class="hint">markdown or plain text - appended to the baseline rules</span></label>
+                  <textarea id="tpl-content" rows="10" placeholder="e.g. Organise the actions under headings: Diagnosis, Steps taken, Resolution. Keep it under 8 bullets."></textarea>
+                </div>
+                <input type="file" id="tpl-file" accept=".md,.markdown,text/markdown,text/plain" class="hidden">
+                <div class="tpl-editor-actions">
+                  <button class="btn btn-navy-ghost btn-sm" id="tpl-upload" type="button">Upload .md</button>
+                  <span class="tpl-file-note" id="tpl-file-note"></span>
+                  <button class="btn btn-ghost btn-sm" id="tpl-delete" type="button" style="margin-left:auto;">Delete</button>
+                  <button class="btn btn-pink btn-sm" id="tpl-save" type="button">Save template</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -420,7 +458,7 @@
     <div class="modal-card">
       <div class="badge">⏱</div>
       <h3>This is a long recording</h3>
-      <p>You've been recording for over 30 minutes. Long recordings capture more keyframes, which take longer to review and to summarise. Recording is still running — this is just a heads-up.</p>
+      <p>You've been recording for over 30 minutes. Long recordings capture more keyframes, which take longer to review and to summarise. Recording is still running, this is just a heads-up.</p>
       <div class="modal-actions">
         <button class="btn btn-pink btn-sm" id="btn-dismiss-duration">Got it, keep recording</button>
       </div>

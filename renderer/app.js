@@ -56,6 +56,111 @@ function applySummaryModel(id) {
   $('review-model-name').textContent = id === 'claude' ? 'Claude' : 'Ollama (local)';
 }
 
+// ─── Summary templates ────────────────────────────────────────────────────────
+// Persisted in localStorage (same mechanism as every other setting/key in the
+// app): `summaryTemplates` = JSON array of { id, title, content }; the active
+// selection is `activeTemplateId` ('' = none / baseline only). providers.js
+// reads these same keys to layer the active template onto SUMMARY_RULES.
+let editingId = null;   // template being edited in the form (null = new)
+
+function loadTemplates() {
+  try { const v = JSON.parse(ls('summaryTemplates', '[]')); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+}
+function saveTemplates(list) { set('summaryTemplates', JSON.stringify(list)); }
+function getActiveTemplateId() { return localStorage.getItem('activeTemplateId') || ''; }
+function setActiveTemplateId(id) { set('activeTemplateId', id || ''); }
+
+function renderTemplates() {
+  const list = loadTemplates();
+  const activeId = getActiveTemplateId();
+  const el = $('tpl-list');
+  if (!el) return;
+  el.innerHTML = '';
+  el.appendChild(makeTemplateCard({ id: '', title: 'No template', sub: 'Baseline rules only' }, activeId, false));
+  list.forEach(t => el.appendChild(makeTemplateCard(t, activeId, true)));
+}
+
+function makeTemplateCard(t, activeId, editable) {
+  const card = document.createElement('div');
+  card.className = 'tpl-item' + (t.id === activeId ? ' active' : '');
+  card.dataset.tplId = t.id;
+  card.innerHTML =
+    `<span class="radio"></span>` +
+    `<div class="grow"><div class="name">${escapeHtml(t.title || 'Untitled')}</div>` +
+    (t.sub ? `<div class="sub">${escapeHtml(t.sub)}</div>` : '') + `</div>`;
+  // Clicking the card selects (activates) this template — or "No template".
+  card.addEventListener('click', () => { setActiveTemplateId(t.id); renderTemplates(); });
+  if (editable) {
+    const actions = document.createElement('div');
+    actions.className = 'tpl-actions';
+    const edit = document.createElement('button');
+    edit.type = 'button'; edit.className = 'tpl-mini'; edit.textContent = 'Edit';
+    edit.addEventListener('click', (e) => { e.stopPropagation(); openTemplateEditor(t.id); });
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'tpl-mini danger'; del.textContent = 'Delete';
+    del.addEventListener('click', (e) => { e.stopPropagation(); deleteTemplate(t.id); });
+    actions.append(edit, del);
+    card.appendChild(actions);
+  }
+  return card;
+}
+
+function openTemplateEditor(id) {
+  const t = loadTemplates().find(x => x.id === id);
+  editingId = t ? t.id : null;
+  $('tpl-title').value = t ? t.title : '';
+  $('tpl-content').value = t ? t.content : '';
+  $('tpl-title').classList.remove('error');
+  $('tpl-editor-label').textContent = t ? `Editing: ${t.title || 'Untitled'}` : 'New template';
+  $('tpl-delete').style.display = t ? '' : 'none';
+  $('tpl-file-note').textContent = '';
+}
+function newTemplateEditor() { openTemplateEditor(null); }
+
+function saveTemplate() {
+  const title = $('tpl-title').value.trim();
+  const content = $('tpl-content').value;
+  if (!title) { $('tpl-title').classList.add('error'); $('tpl-title').focus(); return; }
+  const list = loadTemplates();
+  if (editingId) {
+    const t = list.find(x => x.id === editingId);
+    if (t) { t.title = title; t.content = content; }
+  } else {
+    const id = `tpl-${Date.now()}-${Math.floor(Math.random() * 1e5)}`;
+    list.push({ id, title, content });
+    editingId = id;
+    setActiveTemplateId(id);   // a freshly authored template becomes the active one
+  }
+  saveTemplates(list);
+  renderTemplates();
+  openTemplateEditor(editingId);
+  const note = $('tpl-file-note');
+  note.textContent = 'Saved';
+  setTimeout(() => { if (note.textContent === 'Saved') note.textContent = ''; }, 1500);
+}
+
+function deleteTemplate(id) {
+  if (!confirm('Delete this template?')) return;
+  saveTemplates(loadTemplates().filter(x => x.id !== id));
+  // If the active template was deleted, fall back to baseline-only (no dangling id).
+  if (getActiveTemplateId() === id) setActiveTemplateId('');
+  if (editingId === id) newTemplateEditor();
+  renderTemplates();
+}
+
+async function loadTemplateFile(file) {
+  if (!file) return;
+  let text = '';
+  try { text = await file.text(); } catch { text = ''; }
+  $('tpl-content').value = text;
+  if (!$('tpl-title').value.trim()) {
+    $('tpl-title').value = file.name.replace(/\.(md|markdown|txt)$/i, '');
+    $('tpl-title').classList.remove('error');
+  }
+  $('tpl-file-note').textContent = `Loaded ${file.name}`;
+}
+
 // ─── Screen / stage machine ──────────────────────────────────────────────────
 // screen: work | settings.  stage (within work): ready | countdown | recording
 //         | review | processing | sent
@@ -63,6 +168,7 @@ function setScreen(s) {
   document.body.dataset.screen = s;
   $('nav-work').classList.toggle('active', s === 'work');
   $('nav-settings').classList.toggle('active', s === 'settings');
+  $('nav-templates').classList.toggle('active', s === 'templates');
 }
 function setStage(s) {
   document.body.dataset.stage = s;
