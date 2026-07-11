@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, screen, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const eventsCapture = require('./main/events-capture');
@@ -26,18 +26,41 @@ function createWindow() {
 
 // Return capture sources so the renderer can pick one for getUserMedia.
 // `types` selects screens (default) or individual windows -- the UI offers
-// an "Entire screen" vs "Single window" capture source choice.
+// an "Entire screen" vs "Single window" capture source choice, and (when more
+// than one display is attached) which display to record.
+//
+// Mapping ported from CardonetCapture's listCaptureSources: each source is
+// normalised to { id, name, type, thumbnail }. For screens we additionally
+// match the DesktopCapturerSource to its Display via `display_id` and fold the
+// resolution + a "Primary" tag into the name, so multiple monitors read as
+// e.g. "Screen 1 · 2560×1440 · Primary" / "Screen 2 · 1920×1080" instead of
+// indistinguishable "Entire screen" entries.
 ipcMain.handle('get-sources', async (_e, opts) => {
   const types = (opts && Array.isArray(opts.types) && opts.types.length) ? opts.types : ['screen'];
   const sources = await desktopCapturer.getSources({
     types,
     thumbnailSize: { width: 320, height: 180 },
   });
-  return sources.map(s => ({
-    id: s.id,
-    name: s.name,
-    thumbnail: s.thumbnail.toDataURL(),
-  }));
+  const displays = screen.getAllDisplays();
+  const primaryId = screen.getPrimaryDisplay().id;
+  return sources.map(s => {
+    const isScreen = s.id.startsWith('screen');
+    let name = s.name || (isScreen ? 'Entire screen' : 'Window');
+    if (isScreen && s.display_id) {
+      const d = displays.find(dd => String(dd.id) === String(s.display_id));
+      if (d) {
+        const w = Math.round(d.size.width * d.scaleFactor);
+        const h = Math.round(d.size.height * d.scaleFactor);
+        name = `${name} · ${w}×${h}${d.id === primaryId ? ' · Primary' : ''}`;
+      }
+    }
+    return {
+      id: s.id,
+      name,
+      type: isScreen ? 'screen' : 'window',
+      thumbnail: s.thumbnail.isEmpty() ? '' : s.thumbnail.toDataURL(),
+    };
+  });
 });
 
 // Write the confirmed summary text to Documents/TicketScribe/

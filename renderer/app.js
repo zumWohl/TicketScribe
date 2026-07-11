@@ -24,7 +24,6 @@ function loadSettings() {
   $('s-vlm-model').value           = ls('vlmModel',   'llava');
   $('s-text-model').value          = ls('textModel',  'llama3');
   $('s-threshold').value           = ls('threshold',  String(DEFAULT_THRESHOLD));
-  $('s-summary-model').value       = ls('summaryModel', 'ollama');
   $('s-anthropic-key').value       = ls('anthropicApiKey', '');
   $('s-capture-window').checked    = ls('captureWindow', 'true') === 'true';
   $('s-capture-terminal').checked  = ls('captureTerminal', 'true') === 'true';
@@ -38,22 +37,20 @@ function saveSettings() {
   set('vlmModel',        $('s-vlm-model').value.trim());
   set('textModel',       $('s-text-model').value.trim());
   set('threshold',       $('s-threshold').value.trim());
-  set('summaryModel',    $('s-summary-model').value);
   set('anthropicApiKey', $('s-anthropic-key').value.trim());
   set('captureWindow',     String($('s-capture-window').checked));
   set('captureTerminal',   String($('s-capture-terminal').checked));
   set('captureBrowser',    String($('s-capture-browser').checked));
   set('transcriptEnabled', String($('s-transcript-enabled').checked));
   set('scrubClientNames',  $('s-client-names').value.trim());
-  applySummaryModel($('s-summary-model').value);
+  // summaryModel is persisted live by the model picker (applySummaryModel).
 }
 
-// Keep the Settings dropdown, the right-rail model picker and the review
-// footer label in sync from one source of truth (localStorage.summaryModel).
+// Keep both model pickers (right rail + Settings) and the review footer label
+// in sync from one source of truth (localStorage.summaryModel).
 function applySummaryModel(id) {
   set('summaryModel', id);
-  $('s-summary-model').value = id;
-  document.querySelectorAll('#model-list .model-item').forEach(el => {
+  document.querySelectorAll('.model-item').forEach(el => {
     el.classList.toggle('active', el.dataset.model === id);
   });
   $('review-model-name').textContent = id === 'claude' ? 'Claude' : 'Ollama (local)';
@@ -139,6 +136,40 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+// Populate the display picker. The picker row is only surfaced when more than
+// one display is attached -- with a single monitor there is nothing to choose,
+// so "Entire screen" just records it. Multi-monitor labels (resolution +
+// Primary) come from main.js's get-sources mapping.
+async function populateScreens() {
+  const sel = $('screen-select');
+  const picker = $('screen-picker');
+  let sources = [];
+  try {
+    sources = await ipcRenderer.invoke('get-sources', { types: ['screen'] });
+  } catch {
+    sel.innerHTML = '<option value="">Could not list displays</option>';
+    picker.style.display = 'none';
+    return;
+  }
+  if (!sources.length) {
+    sel.innerHTML = '<option value="">No displays found</option>';
+    picker.style.display = 'none';
+    return;
+  }
+  const prev = sel.value;
+  sel.innerHTML = sources
+    .map(s => `<option value="${s.id}">${escapeHtml(s.name || s.id)}</option>`)
+    .join('');
+  // Keep a prior valid choice; otherwise default to the primary display.
+  if (prev && sources.some(s => s.id === prev)) {
+    sel.value = prev;
+  } else {
+    const primary = sources.find(s => / · Primary$/.test(s.name));
+    sel.value = (primary || sources[0]).id;
+  }
+  picker.style.display = (captureSource === 'screen' && sources.length > 1) ? 'flex' : 'none';
+}
+
 async function resolveSourceId() {
   if (captureSource === 'window') {
     const id = $('window-select').value;
@@ -148,6 +179,10 @@ async function resolveSourceId() {
     if (wins.length) return wins[0].id;
     throw new Error('No capturable window is available. Try "Entire screen" instead.');
   }
+  // Screen mode: use the display the user picked (when multiple are attached),
+  // falling back to the first/primary screen for a single-display setup.
+  const chosen = $('screen-select').value;
+  if (chosen) return chosen;
   const screens = await ipcRenderer.invoke('get-sources', { types: ['screen'] });
   if (!screens.length) throw new Error('No screen sources found.');
   return screens[0].id;
@@ -758,11 +793,13 @@ $('btn-copy-transcript-snippet').addEventListener('click', async () => {
   btn.textContent = 'Copied!';
   setTimeout(() => { btn.textContent = original; }, 1500);
 });
-$('s-summary-model').addEventListener('change', () => applySummaryModel($('s-summary-model').value));
-
-// Right-rail model picker
-document.querySelectorAll('#model-list .model-item').forEach(el => {
-  el.addEventListener('click', () => applySummaryModel(el.dataset.model));
+// Model pickers — both the right rail and the Settings list use the same
+// component. Disabled providers (ChatGPT/Gemini, coming soon) aren't selectable.
+document.querySelectorAll('.model-item').forEach(el => {
+  el.addEventListener('click', () => {
+    if (el.classList.contains('is-disabled')) return;
+    applySummaryModel(el.dataset.model);
+  });
 });
 
 // Capture source tiles
@@ -773,22 +810,16 @@ function selectSource(kind) {
   $('src-window').classList.toggle('active', kind === 'window');
   $('src-screen').classList.toggle('active', kind === 'screen');
   $('window-picker').style.display = kind === 'window' ? 'flex' : 'none';
+  // populateScreens re-shows #screen-picker itself when >1 display is attached.
+  $('screen-picker').style.display = 'none';
   if (kind === 'window') populateWindows();
+  else populateScreens();
 }
 
 // Start recording → countdown → capture
 $('btn-start').addEventListener('click', () => {
-  const input = $('ticket-id');
-  currentTicket = input.value.trim();
-  if (!currentTicket) {
-    input.classList.add('error');
-    input.focus();
-    return;
-  }
-  input.classList.remove('error');
   startCountdown();
 });
-$('ticket-id').addEventListener('input', () => $('ticket-id').classList.remove('error'));
 
 function startCountdown() {
   setStage('countdown');
@@ -929,7 +960,7 @@ $('btn-copy').addEventListener('click', async () => {
   setTimeout(() => { btn.textContent = original; }, 1500);
 });
 $('btn-open-folder').addEventListener('click', () => ipcRenderer.invoke('open-folder'));
-$('btn-new').addEventListener('click', () => { $('ticket-id').value = ''; resetToReady(); });
+$('btn-new').addEventListener('click', () => { resetToReady(); });
 
 // ─── Init ────────────────────────────────────────────────────────────────────
 loadSettings();

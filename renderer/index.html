@@ -11,10 +11,8 @@
 
   <!-- ── Titlebar ──────────────────────────────────────────────────── -->
   <div class="titlebar">
-    <div class="tb-dots"><span></span><span></span><span></span></div>
     <div class="tb-brand">
-      <span class="brand-mark"></span>
-      <span class="brand-name">Cardonet</span>
+      <img class="brand-logo" src="assets/cardonet-logo.png" alt="Cardonet">
       <span class="brand-sep"></span>
       <span class="brand-sub">Capture</span>
     </div>
@@ -73,12 +71,7 @@
             <div>
               <div class="eyebrow">New Resolution Recording</div>
               <h4 class="title">Record a fix, get a ticket-ready summary</h4>
-              <p class="hero-note">Enter a ticket reference, choose what to capture, then start recording. Sensitive on-screen data is detected and masked before anything reaches the model — and you review every frame first.</p>
-            </div>
-
-            <div class="field">
-              <label for="ticket-id">Ticket reference</label>
-              <input id="ticket-id" type="text" placeholder="e.g. 48213" autocomplete="off" spellcheck="false">
+              <p class="hero-note">Choose what to capture, then start recording. Sensitive on-screen data is detected and masked before anything reaches the model — and you review every frame first.</p>
             </div>
 
             <div class="spacer"></div>
@@ -104,6 +97,13 @@
                   <div class="meta">
                     <div class="cap">Window to capture</div>
                     <select id="window-select"><option>Loading windows…</option></select>
+                  </div>
+                </div>
+                <div class="window-picker" id="screen-picker" style="display:none;">
+                  <span class="ico"><span></span></span>
+                  <div class="meta">
+                    <div class="cap">Display to record</div>
+                    <select id="screen-select"><option>Loading displays…</option></select>
                   </div>
                 </div>
               </div>
@@ -248,6 +248,16 @@
                 <div class="grow"><div class="name">Claude</div><div class="sub">Sonnet · vision · cloud</div></div>
                 <span class="tag default">Default</span>
               </button>
+              <button class="model-item is-disabled coming-soon" data-model="chatgpt" data-tip="Coming soon" aria-disabled="true">
+                <span class="radio"></span>
+                <div class="grow"><div class="name">ChatGPT</div><div class="sub">GPT-4o · vision · cloud</div></div>
+                <span class="tag cloud">Cloud</span>
+              </button>
+              <button class="model-item is-disabled coming-soon" data-model="gemini" data-tip="Coming soon" aria-disabled="true">
+                <span class="radio"></span>
+                <div class="grow"><div class="name">Gemini</div><div class="sub">1.5 Pro · vision · cloud</div></div>
+                <span class="tag cloud">Cloud</span>
+              </button>
               <button class="model-item active" data-model="ollama">
                 <span class="radio"></span>
                 <div class="grow"><div class="name">Run locally with Ollama</div><div class="sub">On-device vision + text models</div></div>
@@ -277,15 +287,32 @@
           <h4 class="title" style="margin-bottom:6px;">Integrations &amp; capture</h4>
 
           <div class="settings-section-label">Summary Model Providers</div>
+          <div class="model-list" id="settings-model-list">
+            <button class="model-item" data-model="claude">
+              <span class="radio"></span>
+              <div class="grow"><div class="name">Claude</div><div class="sub">Sonnet · vision · cloud</div></div>
+              <span class="tag default">Default</span>
+            </button>
+            <button class="model-item is-disabled coming-soon" data-model="chatgpt" data-tip="Coming soon" aria-disabled="true">
+              <span class="radio"></span>
+              <div class="grow"><div class="name">ChatGPT</div><div class="sub">GPT-4o · vision · cloud</div></div>
+              <span class="tag cloud">Cloud</span>
+            </button>
+            <button class="model-item is-disabled coming-soon" data-model="gemini" data-tip="Coming soon" aria-disabled="true">
+              <span class="radio"></span>
+              <div class="grow"><div class="name">Gemini</div><div class="sub">1.5 Pro · vision · cloud</div></div>
+              <span class="tag cloud">Cloud</span>
+            </button>
+            <button class="model-item" data-model="ollama">
+              <span class="radio"></span>
+              <div class="grow"><div class="name">Run locally with Ollama</div><div class="sub">On-device vision + text models</div></div>
+              <span class="tag private">Private</span>
+            </button>
+          </div>
+
+          <div class="settings-section-label">Model Configuration</div>
           <div class="settings-card">
             <div class="form-grid">
-              <div class="form-group">
-                <label for="s-summary-model">Summary model</label>
-                <select id="s-summary-model">
-                  <option value="ollama">Ollama (local, default)</option>
-                  <option value="claude">Claude (cloud)</option>
-                </select>
-              </div>
               <div class="form-group">
                 <label for="s-anthropic-key">Anthropic API key <span class="hint">(Claude only)</span></label>
                 <input id="s-anthropic-key" type="password" placeholder="sk-ant-...">

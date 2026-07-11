@@ -4,6 +4,21 @@
    Brand tokens (colors, type, radii, shadows) mirror colors_and_type.css.
    ========================================================================== */
 
+/* Open Sans — the official Cardonet brand font, bundled locally (assets/fonts)
+   so it renders identically offline instead of falling back to a system sans. */
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-Light.ttf") format("truetype");            font-weight: 300; font-style: normal; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-LightItalic.ttf") format("truetype");      font-weight: 300; font-style: italic; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-Regular.ttf") format("truetype");          font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-Italic.ttf") format("truetype");           font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-SemiBold.ttf") format("truetype");         font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-SemiBoldItalic.ttf") format("truetype");   font-weight: 600; font-style: italic; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-Bold.ttf") format("truetype");             font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-BoldItalic.ttf") format("truetype");       font-weight: 700; font-style: italic; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-ExtraBold.ttf") format("truetype");        font-weight: 800; font-style: normal; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("assets/fonts/OpenSans-ExtraBoldItalic.ttf") format("truetype");  font-weight: 800; font-style: italic; font-display: swap; }
+/* Static Bold — Cardonet's display/tagline face (available for headline moments). */
+@font-face { font-family: "Static"; src: url("assets/fonts/Static_Bold.otf") format("opentype");                 font-weight: 700; font-style: normal; font-display: swap; }
+
 :root {
   /* Heartbeat palette */
   --cn-pink:      #DF138A;   /* primary accent */
@@ -97,14 +112,8 @@ button { font-family: var(--font-sans); }
   -webkit-app-region: drag;
   z-index: 20;
 }
-.tb-dots { display: flex; gap: 8px; }
-.tb-dots span { width: 12px; height: 12px; border-radius: 999px; background: #E4E2E8; }
 .tb-brand { display: flex; align-items: center; gap: 9px; -webkit-app-region: no-drag; }
-.brand-mark {
-  width: 20px; height: 20px; border-radius: 6px;
-  background: var(--cn-gradient);
-}
-.brand-name { font-size: 13px; font-weight: 700; color: var(--ink); letter-spacing: .01em; }
+.brand-logo { height: 16px; width: auto; display: block; }
 .brand-sep { width: 1px; height: 16px; background: #E4E2E8; }
 .brand-sub { font-size: 13px; font-weight: 600; color: var(--slate); }
 .tb-gradient {
@@ -207,11 +216,11 @@ body[data-screen="settings"] .rightrail { display: none; }
 
 /* Stage visibility driven by data-stage */
 .stage { display: none; flex: 1; min-height: 0; overflow-y: auto; }
-body[data-stage="ready"]      .stage-ready,
-body[data-stage="recording"] .stage-recording,
-body[data-stage="review"]    .stage-review,
-body[data-stage="processing"].stage-processing,
-body[data-stage="sent"]      .stage-sent { display: flex; }
+body[data-stage="ready"]       .stage-ready,
+body[data-stage="recording"]   .stage-recording,
+body[data-stage="review"]      .stage-review,
+body[data-stage="processing"]  .stage-processing,
+body[data-stage="sent"]        .stage-sent { display: flex; }
 
 /* ── Eyebrows / headings ───────────────────────────────────────────────── */
 .eyebrow {
@@ -540,19 +549,31 @@ h4.title { font-size: 23px; font-weight: 700; color: var(--cn-navy); line-height
 }
 .rr-title .auto .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--cn-cyan); }
 .model-list { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+/* Per-provider accent — exact shades from the design mockup's MODELS list
+   (Claude/ChatGPT/Gemini/Ollama). Drives the selected-state treatment below. */
+.model-item[data-model="claude"]  { --accent: #DF138A; }
+.model-item[data-model="chatgpt"] { --accent: #10A37F; }
+.model-item[data-model="gemini"]  { --accent: #4285F4; }
+.model-item[data-model="ollama"]  { --accent: #18161E; }
 .model-item {
+  --accent: var(--cn-pink);
   display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--r-md);
   background: var(--paper); box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; border: 0; width: 100%; text-align: left;
   transition: box-shadow .14s ease, background .14s ease;
 }
-.model-item.active { background: var(--surface); box-shadow: inset 0 0 0 2px var(--cn-pink); }
-.model-item .radio { width: 18px; height: 18px; border-radius: 999px; flex: 0 0 18px; background: #fff; box-shadow: inset 0 0 0 2px var(--mute-2); }
-.model-item.active .radio { box-shadow: none; }
+/* Selected-state treatment mirrors the mockup: #FBFAFC tint + a 2px ring +
+   a filled radio dot — but keyed to the provider's --accent instead of a
+   fixed pink. Unselected shows the accent as a hollow ring so every
+   provider's colour is still legible. */
+.model-item.active { background: var(--surface); box-shadow: inset 0 0 0 2px var(--accent); }
+.model-item .radio { width: 18px; height: 18px; border-radius: 999px; flex: 0 0 18px; background: #fff; box-shadow: inset 0 0 0 2px var(--accent); }
+.model-item.active .radio { background: var(--accent); box-shadow: none; }
 .model-item .name { font-size: 13.5px; font-weight: 700; color: var(--ink); }
 .model-item .sub { font-size: 11.5px; color: var(--slate); }
 .model-item .tag { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; white-space: nowrap; color: var(--slate); background: var(--rule); }
 .model-item .tag.default { color: var(--cn-pink-hov); background: var(--pink-soft); }
 .model-item .tag.private { color: var(--ink); background: var(--cn-yellow); }
+.model-item .tag.cloud { color: var(--slate); background: var(--rule); }
 .rr-divider { height: 1px; background: var(--line); }
 .protect-list { margin-top: 12px; display: flex; flex-direction: column; gap: 9px; }
 .protect-row { display: flex; align-items: center; gap: 10px; }
