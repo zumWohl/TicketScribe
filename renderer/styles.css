@@ -387,7 +387,19 @@ h4.title { font-size: 23px; font-weight: 700; color: var(--cn-navy); line-height
 }
 .frame-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .frame-card-head .cap { font-size: 11px; font-weight: 700; color: var(--slate); }
-.frame-card-head .pos { margin-left: auto; font-size: 11px; color: var(--slate); font-variant-numeric: tabular-nums; }
+.frame-card-head .pos { margin-left: 12px; font-size: 11px; color: var(--slate); font-variant-numeric: tabular-nums; }
+.zoom-controls { margin-left: auto; display: flex; align-items: center; gap: 3px; }
+.zoom-btn {
+  border: 0; cursor: pointer; font-family: var(--font-sans);
+  min-width: 24px; height: 24px; padding: 0 7px; border-radius: 999px;
+  background: var(--surface-2); color: var(--cn-navy); font-size: 14px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .14s ease, opacity .14s ease;
+}
+.zoom-btn:hover:not(:disabled) { background: var(--line); }
+.zoom-btn:disabled { opacity: .4; cursor: default; }
+.zoom-btn.zoom-fit { font-size: 11px; letter-spacing: .02em; padding: 0 11px; }
+.zoom-label { min-width: 44px; text-align: center; font-size: 11px; font-weight: 700; color: var(--slate); font-variant-numeric: tabular-nums; }
 .draw-hint {
   display: flex; align-items: center; gap: 9px; margin-bottom: 9px;
   font-size: 12px; color: var(--graphite); line-height: 1.4;
@@ -415,9 +427,12 @@ h4.title { font-size: 23px; font-weight: 700; color: var(--cn-navy); line-height
 }
 
 /* the image / drawing area */
-.frame-stage { position: relative; height: 300px; display: flex; align-items: center; justify-content: center; }
-.preview-canvas { display: block; max-width: 100%; max-height: 100%; }
-.frame-empty { color: var(--slate); font-size: 13px; display: flex; align-items: center; gap: 10px; }
+/* Flex + margin:auto centres the canvas when it fits AND stays scroll-safe when
+   it's zoomed larger than the viewport (unlike justify/align-center, which clip
+   the overflowing top/left). Native scrollbars pan the zoomed frame. */
+.frame-stage { position: relative; height: 300px; display: flex; overflow: auto; }
+.preview-canvas { display: block; margin: auto; }
+.frame-empty { margin: auto; color: var(--slate); font-size: 13px; display: flex; align-items: center; gap: 10px; }
 .mini-spin { width: 16px; height: 16px; border-radius: 999px; border: 2px solid var(--pink-soft); border-top-color: var(--cn-pink); animation: spin 1s linear infinite; }
 
 /* draw overlay sits exactly over the preview canvas */

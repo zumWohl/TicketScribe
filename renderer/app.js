@@ -319,6 +319,15 @@ let reviewIndex  = 0;
 let reviewReady  = false;
 let interaction  = null;   // { type:'draw'|'move'|'resize', maskId, handle, dx, dy, x0, y0 }
 let draftRect    = null;   // { x, y, w, h } in full-res canvas px
+// Zoom is expressed relative to the fit-to-view scale (1 = fit). Zooming
+// re-renders the SAME masked preview (burnPreview) at a larger backing-store
+// resolution — never a separate unmasked source — and lets #frame-stage scroll
+// to pan. Because masks are stored in full-res canvas coords and boxes/pointer
+// mapping are derived from the overlay's live rect, the interactions stay
+// correct at any zoom without extra math.
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 6;
+let zoomLevel  = 1;
 
 // After Stop: OCR every frame, scrub its text, and seed auto-detected masks
 // (in full-res canvas coordinates) from the sensitive words Tesseract found.
@@ -334,6 +343,7 @@ async function analyzeFrames() {
   }
   reviewReady = true;
   reviewIndex = 0;
+  resetZoom();
   renderReview();
 }
 
@@ -387,19 +397,31 @@ function renderReview() {
     positionOverlay();
     renderMaskBoxes(kf);
   }
+  updateZoomLabel();
+  // At fit there's nothing to pan; keep the view anchored top-left/centered.
+  if (zoomLevel === 1) { const s = $('frame-stage'); s.scrollLeft = 0; s.scrollTop = 0; }
 }
 
-// Draw the frame scaled to fit, then destructively paint every mask on the
-// preview canvas itself — so no readable secret pixels are ever shown beneath a
-// box, even mid-drag (this is re-run on every mask change).
-function burnPreview(kf) {
-  const src = kf.canvas;
+// Base fit-to-view scale for the current frame (source px → screen px at
+// zoom 1). Kept as a helper so the zoom label and clamping share one definition.
+function fitScale(kf) {
   const stage = $('frame-stage');
   const maxW = stage.clientWidth;
   const maxH = stage.clientHeight;
-  const scale = Math.min(maxW / src.width, maxH / src.height, 1) || 1;
-  const dw = Math.max(1, Math.round(src.width * scale));
-  const dh = Math.max(1, Math.round(src.height * scale));
+  return Math.min(maxW / kf.canvas.width, maxH / kf.canvas.height, 1) || 1;
+}
+
+// Draw the frame at the current effective scale (fit × zoom), then destructively
+// paint every mask on the preview canvas itself — so no readable secret pixels
+// are ever shown beneath a box, even mid-drag or zoomed in (re-run on every
+// mask change and every zoom change). Zooming enlarges the backing store and
+// re-reads the full-res source for real detail; it NEVER reads an unmasked
+// render, so the masking guarantee holds at any zoom.
+function burnPreview(kf) {
+  const src = kf.canvas;
+  const effScale = fitScale(kf) * zoomLevel;
+  const dw = Math.max(1, Math.round(src.width * effScale));
+  const dh = Math.max(1, Math.round(src.height * effScale));
 
   const canvas = $('preview-canvas');
   canvas.width = dw;
@@ -407,10 +429,10 @@ function burnPreview(kf) {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(src, 0, 0, dw, dh);
 
-  // Fill masks in preview-space px (mask coords are full-res → scale down).
+  // Fill masks in preview-space px (mask coords are full-res → scale to effScale).
   ctx.fillStyle = '#18161E';
   for (const m of kf.masks) {
-    ctx.fillRect(m.x * scale, m.y * scale, m.w * scale, m.h * scale);
+    ctx.fillRect(m.x * effScale, m.y * effScale, m.w * effScale, m.h * effScale);
   }
 }
 
@@ -485,7 +507,7 @@ function renderFilmstrip() {
       dot.className = 'marker';
       b.appendChild(dot);
     }
-    b.addEventListener('click', () => { reviewIndex = i; renderReview(); });
+    b.addEventListener('click', () => { reviewIndex = i; resetZoom(); renderReview(); });
     strip.appendChild(b);
   });
 }
@@ -599,6 +621,45 @@ function renderDraft() {
 }
 
 function cssEscape(s) { return String(s).replace(/["\\]/g, '\\$&'); }
+
+// ── Zoom & pan ────────────────────────────────────────────────────────────────
+// Set the zoom level, re-render the masked preview at the new scale, and keep
+// the point under `anchorClientX/Y` (defaults to the viewport centre) fixed so
+// zooming feels stable. Panning is via #frame-stage's native scrollbars.
+function setZoom(newZoom, anchorClientX, anchorClientY) {
+  const kf = keyframes[reviewIndex];
+  if (!reviewReady || !kf || kf.removed) return;
+  const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
+  const stage = $('frame-stage');
+  const canvas = $('preview-canvas');
+  const rect = stage.getBoundingClientRect();
+  const ax = (anchorClientX == null ? rect.left + stage.clientWidth / 2 : anchorClientX) - rect.left;
+  const ay = (anchorClientY == null ? rect.top + stage.clientHeight / 2 : anchorClientY) - rect.top;
+  // Fraction of the content currently under the anchor point (old canvas space).
+  const oldW = canvas.width || 1, oldH = canvas.height || 1;
+  const fx = (stage.scrollLeft + ax) / oldW;
+  const fy = (stage.scrollTop + ay) / oldH;
+
+  zoomLevel = z;
+  burnPreview(kf);      // same masked render, larger backing store
+  positionOverlay();    // overlay tracks the resized canvas; %-boxes follow
+  updateZoomLabel();
+
+  // Restore the anchor so the same pixel stays under the cursor/centre.
+  stage.scrollLeft = fx * canvas.width - ax;
+  stage.scrollTop  = fy * canvas.height - ay;
+}
+
+function updateZoomLabel() {
+  const label = $('zoom-label');
+  if (label) label.textContent = Math.round(zoomLevel * 100) + '%';
+  const out = $('zoom-out'), zin = $('zoom-in'), fit = $('zoom-fit');
+  if (out) out.disabled = zoomLevel <= MIN_ZOOM + 1e-3;
+  if (zin) zin.disabled = zoomLevel >= MAX_ZOOM - 1e-3;
+  if (fit) fit.disabled = zoomLevel === 1;
+}
+
+function resetZoom() { zoomLevel = 1; }
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  GENERATION PIPELINE
@@ -907,14 +968,28 @@ $('btn-stop').addEventListener('click', async () => {
 $('btn-dismiss-duration').addEventListener('click', () => $('duration-modal').classList.add('hidden'));
 
 // Review controls
-$('btn-prev-frame').addEventListener('click', () => { if (reviewIndex > 0) { reviewIndex--; renderReview(); } });
-$('btn-next-frame').addEventListener('click', () => { if (reviewIndex < keyframes.length - 1) { reviewIndex++; renderReview(); } });
+$('btn-prev-frame').addEventListener('click', () => { if (reviewIndex > 0) { reviewIndex--; resetZoom(); renderReview(); } });
+$('btn-next-frame').addEventListener('click', () => { if (reviewIndex < keyframes.length - 1) { reviewIndex++; resetZoom(); renderReview(); } });
 $('btn-remove-frame').addEventListener('click', () => { if (keyframes[reviewIndex]) { keyframes[reviewIndex].removed = true; renderReview(); } });
 $('btn-restore-frame').addEventListener('click', () => { if (keyframes[reviewIndex]) { keyframes[reviewIndex].removed = false; renderReview(); } });
 $('btn-generate').addEventListener('click', () => generateSummary());
 $('btn-discard').addEventListener('click', () => {
   if (confirm('Discard this recording and return to the start?')) resetToReady();
 });
+
+// Zoom controls (buttons zoom about the centre; Fit / double-click reset).
+$('zoom-in').addEventListener('click', () => setZoom(zoomLevel * 1.25));
+$('zoom-out').addEventListener('click', () => setZoom(zoomLevel / 1.25));
+$('zoom-fit').addEventListener('click', () => setZoom(1));
+// Scroll-to-zoom, anchored on the cursor. Pan while zoomed via the scrollbars.
+$('frame-stage').addEventListener('wheel', (e) => {
+  if (!reviewReady) return;
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  setZoom(zoomLevel * factor, e.clientX, e.clientY);
+}, { passive: false });
+// Double-click resets to fit.
+$('frame-stage').addEventListener('dblclick', () => setZoom(1));
 
 // draw-to-mask: pointer down on the empty overlay begins a draft
 $('mask-overlay').addEventListener('mousedown', (e) => {
