@@ -1,6 +1,18 @@
 // ─── Electron bridge ────────────────────────────────────────────────────────
 const { ipcRenderer } = require('electron');
-const { createWorker } = require('tesseract.js');
+const path = require('path');
+const { pathToFileURL } = require('url');
+// Tesseract must run from its BROWSER build here. This renderer uses
+// nodeIntegration, so a bare `require('tesseract.js')` loads the NODE build,
+// whose worker_threads-based worker cannot be constructed in Electron's
+// renderer V8 ("The V8 platform used by this instance of Node does not support
+// creating Workers") -- createWorker() then throws and runOCR() returns no
+// words, silently disabling all auto-detection/masking. The prebuilt browser
+// bundle uses a Web Worker (supported in Chromium) with worker/core assets
+// served from the local install (no CDN for those).
+const { createWorker } = require('tesseract.js/dist/tesseract.min.js');
+const TESSERACT_WORKER_PATH = pathToFileURL(path.join(path.dirname(require.resolve('tesseract.js/dist/tesseract.min.js')), 'worker.min.js')).href;
+const TESSERACT_CORE_PATH = pathToFileURL(path.dirname(require.resolve('tesseract.js-core/tesseract-core.wasm.js'))).href + '/';
 const { providers } = require('./providers');
 const { scrubText, scrubEvents, findSensitiveWords } = require('./scrub-timeline');
 const { maskAndDownscale, MODEL_IMAGE_MAX_DIMENSION } = require('./redact');
@@ -369,7 +381,13 @@ function stopTimer() { clearInterval(timerHandle); timerHandle = null; }
 // ─── OCR worker ────────────────────────────────────────────────────────────────
 let ocrWorker = null;
 async function ensureOCRWorker() {
-  if (!ocrWorker) ocrWorker = await createWorker('eng', 1, { logger: () => {} });
+  if (!ocrWorker) {
+    ocrWorker = await createWorker('eng', 1, {
+      workerPath: TESSERACT_WORKER_PATH,
+      corePath: TESSERACT_CORE_PATH,
+      logger: () => {},
+    });
+  }
 }
 async function runOCR(canvas) {
   try {
@@ -383,7 +401,11 @@ async function runOCR(canvas) {
       .filter(w => w.text && w.text.trim())
       .map(w => ({ text: w.text, bbox: w.bbox }));
     return { text, words };
-  } catch {
+  } catch (err) {
+    // Don't swallow silently — a dead OCR worker disables all auto-masking, and
+    // that failure must be visible in the console rather than looking like
+    // "no sensitive data found".
+    console.error('runOCR failed:', err);
     return { text: '', words: [] };
   }
 }
