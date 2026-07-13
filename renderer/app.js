@@ -19,7 +19,7 @@ const { maskAndDownscale, MODEL_IMAGE_MAX_DIMENSION } = require('./redact');
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const CAPTURE_INTERVAL_MS   = 1500;
-const DEFAULT_THRESHOLD     = 5;    // hamming bits (0–64) – lower = more sensitive
+const DEFAULT_THRESHOLD     = 5;    // hash bits that must differ (0 to 10). Lower keeps more frames.
 const MASK_PADDING_PX       = 3;    // padding around auto-detected word boxes (full-res px)
 const DURATION_WARNING_MS   = 30 * 60 * 1000; // warn once past 30 minutes
 // NOTE: there is deliberately no keyframe cap — recordings run until stopped.
@@ -349,7 +349,12 @@ function captureFrame() {
   canvas.getContext('2d').drawImage(video, 0, 0);
 
   const hash      = aHash(canvas);
-  const threshold = parseInt(ls('threshold', String(DEFAULT_THRESHOLD)), 10);
+  // Threshold is a 0 to 10 scale (bits of the 8x8 hash that must differ before
+  // a frame counts as changed). Clamp so a legacy or hand-typed out-of-range
+  // value can't slip through, and keep 0 valid (0 keeps any changed frame).
+  let threshold = parseInt(ls('threshold', String(DEFAULT_THRESHOLD)), 10);
+  if (!Number.isFinite(threshold)) threshold = DEFAULT_THRESHOLD;
+  threshold = Math.max(0, Math.min(10, threshold));
 
   if (!lastHash || hamming(hash, lastHash) > threshold) {
     lastHash = hash;
