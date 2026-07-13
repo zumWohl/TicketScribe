@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Mask verify</title></head>
+<body>
+<pre id="out">running…</pre>
+<script>
+// Pixel-level proof that redaction is DESTRUCTIVE on the sent image — the same
+// maskAndDownscale() the app ships. Draws a known "secret" (solid red block) on
+// a green field, masks it, runs the real send-path, then reads the pixels where
+// the secret was in the FINAL dataUrl and asserts the red is gone (replaced by
+// the mask fill), not merely covered by an overlay. Run on:
+//   - a below-cap frame (400×300)          → not downscaled
+//   - an above-cap frame (2400×1350)        → downscaled to the 1280 long-edge cap
+const { ipcRenderer } = require('electron');
+const { maskAndDownscale, MODEL_IMAGE_MAX_DIMENSION } = require('../renderer/redact.js');
+
+function loadImg(dataUrl) {
+  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = dataUrl; });
+}
+
+function makeSecretCanvas(w, h, secret) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#00c000'; ctx.fillRect(0, 0, w, h);      // green field
+  ctx.fillStyle = '#ff0000'; ctx.fillRect(secret.x, secret.y, secret.w, secret.h); // the "secret"
+  return c;
+}
+
+async function checkFrame(w, h) {
+  const secret = { x: Math.round(w * 0.25), y: Math.round(h * 0.25), w: Math.round(w * 0.30), h: Math.round(h * 0.20) };
+  const src = makeSecretCanvas(w, h, secret);
+  const masks = [{ x: secret.x - 4, y: secret.y - 4, w: secret.w + 8, h: secret.h + 8 }]; // full-res coords
+  const dataUrl = maskAndDownscale(src, masks);
+
+  const img = await loadImg(dataUrl);
+  const out = document.createElement('canvas');
+  out.width = img.naturalWidth; out.height = img.naturalHeight;
+  const octx = out.getContext('2d');
+  octx.drawImage(img, 0, 0);
+
+  const scale = img.naturalWidth / w; // uniform aspect
+  const sx = Math.round((secret.x + secret.w / 2) * scale);
+  const sy = Math.round((secret.y + secret.h / 2) * scale);
+  const px = octx.getImageData(Math.min(sx, out.width - 1), Math.min(sy, out.height - 1), 1, 1).data;
+
+  // green sample far from any mask, to prove the rest of the image survived
+  const gx = Math.min(out.width - 1, Math.round(w * 0.9 * scale));
+  const gy = Math.min(out.height - 1, Math.round(h * 0.9 * scale));
+  const g = octx.getImageData(gx, gy, 1, 1).data;
+
+  const isRed        = px[0] > 150 && px[1] < 110 && px[2] < 110;     // original secret leaked?
+  const isMaskFill   = px[0] < 60 && px[1] < 60 && px[2] < 60;        // black mask fill present?
+  const greenSurvives = g[1] > 110 && g[0] < 130;                     // rest of frame intact?
+  const downscaled   = img.naturalWidth < w;
+
+  return {
+    frame: `${w}x${h}`, downscaled,
+    natural: [img.naturalWidth, img.naturalHeight],
+    sampledSecretPixel: [px[0], px[1], px[2]],
+    sampledGreenPixel: [g[0], g[1], g[2]],
+    secretLeaked: isRed,
+    maskFillPresent: isMaskFill,
+    greenSurvives,
+    pass: !isRed && isMaskFill && greenSurvives,
+  };
+}
+
+(async () => {
+  try {
+    const below = await checkFrame(400, 300);    // below cap → not downscaled
+    const above = await checkFrame(2400, 1350);   // above cap → downscaled
+    const results = [below, above];
+    const pass = results.every(r => r.pass) && below.downscaled === false && above.downscaled === true;
+    const payload = { pass, cap: MODEL_IMAGE_MAX_DIMENSION, results };
+    document.getElementById('out').textContent = JSON.stringify(payload, null, 2);
+    ipcRenderer.send('mask-verify-result', payload);
+  } catch (err) {
+    ipcRenderer.send('mask-verify-result', { pass: false, error: String(err && err.stack || err) });
+  }
+})();
+</script>
+</body>
+</html>

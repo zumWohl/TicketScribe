@@ -9,19 +9,60 @@
 
 const ls = (k, d) => localStorage.getItem(k) || d;
 
+// The summary is a bullet-point list of actions, written in impersonal
+// passive past tense. It must NOT name any actor (no "the engineer", "the
+// technician", "the IT support engineer", "I", or "the user") and must NOT
+// include any date or time -- see the product spec. Example target style:
+//   - Searched the Xerox website for printer drivers and downloaded driver version 2.0.
+//   - Opened Command Prompt and ran the following commands:
+//   - Confirmed installation was completed successfully.
+const SUMMARY_RULES = `Write the work note as a bullet-point list of the actions performed.
+Rules:
+- One action per bullet, in the order it occurred. Every line must start with "- ".
+- Use impersonal, passive past tense. Never name a person or role -- do not write "the engineer", "the technician", "the IT support engineer", "I", or "the user". Begin each bullet directly with the action verb (e.g. "Searched...", "Opened...", "Ran...", "Confirmed...").
+- Do not include any date or time.
+- Describe only what is directly evidenced -- do not infer problems, causes, or intentions that aren't shown.
+- Omit incidental details (browser/OS notifications, prompts unrelated to the work, the screen-recording tool itself) unless clearly part of the work performed.
+- Never repeat passwords, API keys, tokens, or other credentials verbatim; refer to them generically (e.g. "entered a password").
+- Never describe masked or redacted fields as "obscured," "hidden," "blurred," or otherwise implying the value was partially visible -- describe only that the field was present and filled in (e.g. "entered values into the Password and Username fields"), since the underlying value was never seen.
+- Before writing bullets, group all observations that describe the same underlying action, window, or UI state into a single bullet. Only start a new bullet when the user has moved to a genuinely different action, window, or step -- do not produce multiple bullets that redescribe one moment from slightly different angles.
+Return only the bullet list -- no heading, no preamble, no closing sentence.`;
+
+// A user-selected Summary Template (managed on the Templates screen) layers
+// EXTRA instructions on top of SUMMARY_RULES -- it never replaces the baseline.
+// Read from the same localStorage the rest of the app's settings use:
+// `activeTemplateId` ('' = none) picks one entry out of `summaryTemplates`.
+function activeTemplateContent() {
+  try {
+    const id = localStorage.getItem('activeTemplateId') || '';
+    if (!id) return '';
+    const list = JSON.parse(localStorage.getItem('summaryTemplates') || '[]');
+    const t = Array.isArray(list) ? list.find(x => x && x.id === id) : null;
+    return t && t.content ? String(t.content).trim() : '';
+  } catch { return ''; }
+}
+
+// The single point where the baseline rules and the optional template are
+// combined. Baseline first (and explicitly given precedence), template appended
+// after as additional instructions. With no template selected this returns the
+// baseline SUMMARY_RULES verbatim, so generation is unchanged from the default.
+function summaryInstructions() {
+  const tpl = activeTemplateContent();
+  if (!tpl) return SUMMARY_RULES;
+  return `${SUMMARY_RULES}
+
+Additional instructions for this summary (apply these on top of the rules above -- if anything here conflicts with the rules above, the rules above win):
+${tpl}`;
+}
+
 function buildTimelinePrompt(descriptions, activityTimelineText) {
   const timeline = descriptions
-    .map((d, i) => `${i + 1}. [${new Date(d.timestamp).toLocaleTimeString()}] ${d.text}`)
+    .map((d, i) => `${i + 1}. ${d.text}`)
     .join('\n');
-  return `You are writing a professional work note for an IT support ticket.
-Below is a timestamped timeline of observed actions${activityTimelineText ? ', plus an activity timeline of the tools used' : ''}.
-Write a clear, past-tense, professional summary in 3-5 sentences suitable as a ticket note.
-Describe only what the timeline actually shows -- do not infer problems, causes, or intentions that aren't directly stated in it.
-Omit incidental details (browser/OS notifications, prompts unrelated to the actual work, starting the screen recording itself) unless they were clearly part of the work performed.
-Never repeat passwords, API keys, tokens, or other credentials verbatim, even if one appears in the timeline.
-No bullet points.
+  return `You are writing the resolution work note for an IT support ticket, based on a timeline of observed on-screen actions${activityTimelineText ? ', plus an activity timeline of the tools used' : ''}.
+${summaryInstructions()}
 
-Timeline:
+Observed actions:
 ${timeline}
 ${activityTimelineText ? `\nActivity timeline:\n${activityTimelineText}\n` : ''}
 Work note:`;
@@ -63,9 +104,9 @@ const providers = {
         // short, factual description -- there's little for reasoning to do
         // on a "describe this screenshot" task, so skip it for latency.
         think: false,
-        prompt: `You are reviewing a screenshot from an IT support engineer's screen.
+        prompt: `You are reviewing a screenshot from a work session.
 In 1-2 concise sentences, describe the specific action being performed.
-Include: which application is visible and what the engineer is doing.
+Include: which application is visible and what action is being taken. Do not name or refer to any person or role.
 Base this only on what is directly visible -- do not guess at problems, causes, or intentions that aren't clearly shown.
 Do not mention the screen-recording tool itself, and skip incidental UI chrome (notifications, popups, ads) unless it is the actual focus of the action.
 Never repeat or quote passwords, API keys, tokens, or other credentials verbatim, even if visible -- refer to them generically (e.g. "entered a password") if relevant.
@@ -108,12 +149,8 @@ OCR context: "${ocrText.slice(0, 300)}"`,
       });
       content.push({
         type: 'text',
-        text: `You are writing a professional work note for an IT support ticket, based on the screenshots above${activityTimelineText ? ' and the activity timeline below' : ''}.
-Write a clear, past-tense, professional summary in 3-5 sentences suitable as a ticket note.
-Describe only what is directly shown -- do not infer problems, causes, or intentions that aren't clearly visible.
-Omit incidental details (browser/OS notifications, prompts unrelated to the actual work, the screen-recording tool itself) unless clearly part of the work performed.
-Never repeat passwords, API keys, tokens, or other credentials verbatim, even if visible -- refer to them generically (e.g. "entered a password") if relevant.
-No bullet points.${activityTimelineText ? `\n\nActivity timeline:\n${activityTimelineText}` : ''}
+        text: `You are writing the resolution work note for an IT support ticket, based on the redacted screenshots above${activityTimelineText ? ' and the activity timeline below' : ''}.
+${summaryInstructions()}${activityTimelineText ? `\n\nActivity timeline:\n${activityTimelineText}` : ''}
 
 Work note:`,
       });
