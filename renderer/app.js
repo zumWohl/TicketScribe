@@ -971,6 +971,18 @@ function resetToReady() {
 // Nav
 $('nav-work').addEventListener('click', () => setScreen('work'));
 $('nav-settings').addEventListener('click', () => setScreen('settings'));
+$('nav-templates').addEventListener('click', () => { renderTemplates(); newTemplateEditor(); setScreen('templates'); });
+
+// Summary Templates screen controls
+$('tpl-new').addEventListener('click', () => { newTemplateEditor(); $('tpl-title').focus(); });
+$('tpl-save').addEventListener('click', () => saveTemplate());
+$('tpl-delete').addEventListener('click', () => { if (editingId) deleteTemplate(editingId); });
+$('tpl-upload').addEventListener('click', () => $('tpl-file').click());
+$('tpl-file').addEventListener('change', async (e) => {
+  await loadTemplateFile(e.target.files[0]);
+  e.target.value = '';   // allow re-uploading the same file later
+});
+$('tpl-title').addEventListener('input', () => $('tpl-title').classList.remove('error'));
 
 // Coming-soon guards: any element flagged coming-soon does nothing on click.
 document.querySelectorAll('.coming-soon').forEach(el => {
