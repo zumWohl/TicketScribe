@@ -949,11 +949,16 @@ React build). Nothing further to change here for Phase 8.
   itself (the static plan document, describing what the plan *does*, not a
   live code reference). No functional reference (import/require/build
   config) to any deleted path remains.
-- **Fresh-clone verification** (the gate's actual instruction: clone the
-  committed branch into a temp directory — `npm ci`, not `npm install`, no
-  leftover `out/`/`dist`/vendored-asset/cache artifacts from this session —
-  and run the full gate there): see below, run immediately after this
-  commit.
+- **Fresh-clone verification** (`git clone` the local repo at this commit
+  into a scratch temp directory, genuinely isolated from this session's
+  `out/`/`dist/`/vendored-tesseract-assets/`node_modules/.vite` state) —
+  **PASS**: `npm ci` (postinstall vendored tesseract cleanly, including the
+  `eng.traineddata` download), `npm test`, `npm run typecheck`,
+  `npm run test:unit` (14/14), `npm run test:ocr`, `npm run dist`
+  (produced its own `dist/TicketScribe-Setup-0.1.0-x64.exe`), and the 3
+  packaged-build Playwright specs (`packaged-app-smoke`,
+  `packaged-node-modules`, `phase7-packaged-full-flow`) all green against
+  the fresh clone's own build. Scratch directory deleted afterward.
 
 **Commit:** `migration: phase 8 - cutover and cleanup`
 
