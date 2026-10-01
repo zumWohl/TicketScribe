@@ -282,7 +282,52 @@ rather than `ticketscribe`. Deleted that file immediately and added a
 
 ## Phase 3 - redact and scrub-timeline to TypeScript
 
-**Status: not started**
+**Status: COMPLETE**
+
+Ported `renderer/redact.js` → `src/renderer/src/lib/redact.ts` (same
+exports: `maskAndDownscale`, `fillMasks`, `downscale`,
+`MODEL_IMAGE_MAX_DIMENSION` — the last one re-exported from
+`src/shared/image.ts`, Phase 2's constant, so the renderer's downscale cap
+and the main process's size guard can never drift apart) and
+`renderer/scrub-timeline.js` → `src/renderer/src/lib/scrub-timeline.ts`
+(`scrubText`, `scrubEvent`, `scrubEvents`, `findSensitiveWords`, all
+regexes byte-identical). Types only, no logic change, per the plan.
+`scrubEvent`'s `detail` is typed as a loosened `Record<string, unknown>`
+internally (cast back to `ActivityEventDetail` on return) since the legacy
+function treats `detail` duck-typed across all three event kinds — a
+precise discriminated-union rewrite here would be a logic/shape change the
+phase doesn't call for.
+
+**Deviation (noted, not a logic change):** MIGRATION.md's Phase 3 gate text
+lists "IPs" as part of the differential-test corpus. No IP-address regex
+exists anywhere in `renderer/scrub-timeline.js` (its five regexes are
+password/username/API-key/GUID/email) — adding one now would itself be a
+logic change, which this phase explicitly forbids. Omitted from the corpus;
+every regex that actually exists is covered instead.
+
+Added `jsdom` + `@types/jsdom` as devDependencies (vitest runs these
+renderer-lib tests under `// @vitest-environment jsdom` per-file, since
+`scrub-timeline.ts` needs `localStorage` and `redact.ts` needs
+`HTMLCanvasElement`/`document`). `redact.test.ts` stubs
+`HTMLCanvasElement.prototype.getContext`/`toDataURL` (jsdom implements the
+full canvas DOM interface but not real 2D rendering, and a native canvas
+package wasn't worth adding just for this) so `toDataURL` reports back the
+resulting canvas's own width/height — enough to verify the scaling MATH
+across below-cap/at-cap/above-cap inputs, which is exactly the differential
+test's stated scope; real pixel-level verification stays mask-verify's job.
+
+### Gate results
+
+- `npm test` (mask-verify) — **PASS** (still exercises the legacy
+  `renderer/redact.js` directly; Phase 4 repoints it at `redact.ts`).
+- `npm run typecheck` — **PASS**.
+- `npm run test:unit` — **PASS**, 45/45. New: `scrub-timeline.test.ts`
+  (corpus of password/username/API-key/GUID/email/client-name cases, plus
+  the four labelled-value word-split cases from `findSensitiveWords`'
+  doc comment, all compared 1:1 against the legacy module) and
+  `redact.test.ts` (6 dimension cases + a masked-frame case, compared 1:1).
+
+**Commit:** `migration: phase 3 - redact and scrub-timeline to typescript`
 
 ---
 
