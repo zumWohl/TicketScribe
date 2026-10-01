@@ -1,0 +1,21 @@
+﻿appId: com.cardonet.ticketscribe
+productName: TicketScribe
+asar: false
+files:
+  - main.js
+  - main/**
+  - renderer/**
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  executableName: TicketScribe
+nsis:
+  oneClick: true
+  perMachine: true
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: false
+  deleteAppDataOnUninstall: false

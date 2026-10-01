@@ -1,0 +1,39 @@
+﻿name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check tag matches package.json version
+        shell: pwsh
+        run: |
+          $Version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ("v$Version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME does not match package.json version $Version"
+          }
+
+      - run: npm ci
+
+      - run: npm run dist
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $Installer = Get-Item dist/TicketScribe-Setup-*-x64.exe
+          gh release create $env:GITHUB_REF_NAME $Installer.FullName --title "TicketScribe $env:GITHUB_REF_NAME" --generate-notes
