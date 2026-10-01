@@ -4,6 +4,7 @@ import { MODEL_IMAGE_MAX_DIMENSION } from '../../shared/image';
 import { getApiKey } from '../keys';
 import { runOllamaPipeline } from './ollama';
 import * as claude from './claude';
+import * as azure from './azure';
 import * as echo from './echo';
 
 // Defense-in-depth: proves the renderer's downscale ran before sending (it
@@ -36,6 +37,11 @@ export async function generate(request: GenerateRequest): Promise<string> {
   if (request.provider === 'claude') {
     const apiKey = getApiKey('claude');
     return claude.generate(apiKey || '', request.frames, request.activityTimelineText, request.templateContent);
+  }
+
+  if (request.provider === 'azure') {
+    const apiKey = getApiKey('azure');
+    return azure.generate(apiKey || '', request.azure, request.frames, request.activityTimelineText, request.templateContent);
   }
 
   // ollama

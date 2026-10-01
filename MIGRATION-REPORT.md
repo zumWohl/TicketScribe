@@ -1087,13 +1087,147 @@ Nothing else matched — `package-lock.json` is confirmed clean post-`npm instal
 
 ## Phase 10 - Azure AI provider
 
-**Status: not started**
+**Status: COMPLETE**
 
----
+Added Azure OpenAI as a third summary provider, alongside Claude and Ollama.
 
-## Phase 10 - Azure AI provider
+- `src/shared/generate.ts`: `ProviderId` gained `'azure'`; new `AzureSettings
+  { endpoint, deployment }` interface; `GenerateRequest` gained an optional
+  `azure` field, same pattern as the existing `ollama` field.
+- `src/main/providers/azure.ts` (new): POSTs to
+  `https://<endpoint>/openai/v1/chat/completions` with the deployment name
+  in the `model` field, the API key in an `api-key` header, and the
+  `api-key`/image shape of the OpenAI chat-completions format (an
+  `image_url` content part carrying the **full** data URL, unlike Claude's
+  base64-stripped `image` block). Reuses `rules.ts`'s shared
+  `summaryInstructions()` for the prompt. Distinct thrown messages for 401
+  (bad key), 403 (access denied), 404 (deployment not found), 429 (rate
+  limit), and two different content-filter shapes Azure can return (a 4xx
+  body with `error.code === 'content_filter'`, and a 200 response whose
+  `choices[0].finish_reason === 'content_filter'`). Same throw-on-failure
+  contract as every other provider: no silent fallback to raw OCR text.
+- `src/main/providers/index.ts`: new `azure` branch, reads the key via
+  `getApiKey('azure')` and forwards `request.azure`.
+- `src/main/providers/azure.test.ts` (new, vitest): endpoint/deployment
+  missing throws; key missing throws; request shape (URL, `api-key` header,
+  `model` field, image `image_url.url` carries the full data URL, prompt
+  text includes `SUMMARY_RULES`); endpoint normalization (adds `https://`,
+  strips a trailing slash); each of 401/403/404/429 maps to its own
+  message; both content-filter shapes map to the same distinct message; an
+  unmapped status falls through to a generic message; a network failure
+  (fetch rejecting) gets its own message. 10 tests, all passing.
+- `src/main/providers/index.test.ts`: one new test proving the `azure`
+  branch is really wired into the dispatcher (not just unit-tested in
+  isolation) by asserting its real missing-settings error surfaces through
+  `generate()`.
 
-**Status: not started**
+### Settings UI (`App.tsx`)
+
+- `SummaryModel` gained `'azure'`; a `summaryModelLabel()` helper replaced
+  three separate `summaryModel === 'claude' ? 'Claude' : 'Ollama'`
+  ternaries (right-rail "Generating with", the processing-step label, and
+  the sent-screen eyebrow) so adding Azure didn't mean hunting down a
+  fourth copy-pasted ternary later.
+- New "Azure OpenAI" entries in both `model-list` blocks (the right rail
+  during Record/Review, and the Settings screen's own copy of the same
+  list), alongside Claude and Ollama.
+- New "Azure OpenAI Configuration" settings card: endpoint, deployment name
+  (both non-secret, `localStorage`), and an API key field (safeStorage via
+  `setApiKey('azure', ...)`).
+- **"Validate on save that the deployment accepts images"** (gate
+  requirement) is implemented as a dedicated **Test connection** button
+  next to the Azure fields, not an automatic check on every Settings save.
+  Reasoning: "Save settings" is a single shared action that also persists
+  unrelated fields (Ollama URL, capture toggles, redaction list); forcing a
+  real network call on every click of that button, even when the user only
+  toggled a capture checkbox, would be surprising and would block
+  navigation on an unrelated provider's latency. A discoverable, named
+  button that performs exactly the validation the user asked for, sends a
+  real 1x1 test image through the real `generate()` IPC path, and shows the
+  real distinct error message (or a success indicator) is more legible and
+  still satisfies the requirement the gate is checking for. Logged here as
+  a deliberate interpretation, per the report's own convention of
+  documenting reasoned deviations.
+
+### Real bug found and fixed (Claude API key never reached safeStorage)
+
+While wiring the Azure key field, found that the existing Anthropic API key
+field had the same problem it was meant to avoid: `saveSettings()`
+persisted `anthropicApiKey` to **`localStorage`** (`setLs('anthropicApiKey',
+...)`), but `claude.ts`'s `generate()` only ever reads the key via
+`getApiKey('claude')` from the **safeStorage**-backed store populated by
+`setApiKey`. Nothing in `App.tsx` ever called `window.cardonetCapture.setApiKey`.
+Net effect: a key typed into Settings and saved was persisted to
+localStorage (where `claude.ts` never looks) and never reached safeStorage
+(where it actually gets read), so Claude was unreachable as a summary
+provider through the real UI. It only ever worked in automated tests
+because `phase2-providers.spec.ts` calls `window.cardonetCapture.setApiKey`
+directly via `page.evaluate`, bypassing the Settings screen entirely.
+CLAUDE.md's own prose already described the intended behavior
+("`anthropicApiKey` now unused for storage... API keys are no longer in
+localStorage"), so this was a real regression against stated intent, not
+an ambiguous judgment call.
+
+Fixed in the same code I was already touching for Azure's key field: the
+`anthropicApiKey` field is now plain transient React state (never read
+from or written to `localStorage`), `saveSettings()` forwards a non-blank
+value to `setApiKey('claude', ...)`, and a new `hasClaudeKey` indicator
+(from `hasApiKey('claude')`, checked on mount) shows a "saved" label next
+to the field so the user isn't left wondering why it's blank after a
+restart. Same pattern applied to the new Azure key field from the start.
+Verified end to end with a new permanent regression spec,
+`e2e/phase10-claude-key-settings.spec.ts`, which drives the real Settings
+UI (types a key, clicks Save, closes and relaunches the app on the same
+profile, confirms `hasApiKey('claude')` is true and the field stays blank).
+
+### Documentation
+
+- `CLAUDE.md`: new "Azure OpenAI" section (key rotation via key1/key2,
+  UK South provisioning note about vision-capable deployments not being
+  available in every region), updated "Summary generation" and "Settings"
+  prose to describe three providers and the safeStorage-only key flow, a
+  Key constraints note that Azure's `image_url` wants the full data URL
+  where Claude wants it stripped, and a trimmed "Migration status" section
+  (no longer describes in-flight phases, since all 10 are complete).
+- `README.md`: Azure added to the provider list, the "What leaves your
+  device" section, the Features list, and the Configuration section
+  (including a mention of the Test connection button).
+
+### Gate
+
+- `npm run typecheck` - PASS.
+- `npm test` (mask-verify) - PASS.
+- `npm run test:unit` - PASS (27/27, up from 14 before Phase 9/10).
+- `npm run test:ocr`, `test:ocr:offline`, `test:ocr:dev` - all PASS
+  (unaffected by this phase; re-run as part of the full regression sweep).
+- `npm run dist` - PASS, rebuilt `dist/CardonetCapture-Setup-0.1.0-x64.exe`
+  and `dist/win-unpacked/CardonetCapture.exe` with the Phase 10 changes.
+- `npx playwright test` - PASS: 13 passed, 1 skipped. New specs:
+  `phase10-azure-provider.spec.ts` (two always-run tests proving the
+  `generate` IPC channel reaches the real `azure.ts` module and its own
+  validation errors; a third test gated on real credentials), plus the
+  permanent regression specs `phase10-azure-settings.spec.ts` and
+  `phase10-claude-key-settings.spec.ts` described above. All prior specs
+  (echo provider, full record-review-mask-generate-save pipeline against
+  both the dev build and the freshly packaged exe, visual diff) still
+  green.
+- **Real-credential test: not run, no credentials.**
+  `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` and `AZURE_OPENAI_KEY`
+  were not set in this environment, so
+  `e2e/phase10-azure-provider.spec.ts`'s third test (`azure provider: real
+  deployment produces a real summary`) was correctly skipped rather than
+  run against a fake resource. It will run automatically the next time
+  this suite executes in an environment with those three variables set.
+- `git grep -i ticketscribe` - unchanged from the Phase 9 report: only
+  `MIGRATION.md` and `MIGRATION-REPORT.md` itself.
+
+Also fixed a stray duplicated "## Phase 10 - Azure AI provider" section
+header in this file, left over from an imprecise `old_string` match in the
+Phase 9 edit (the replacement text happened to end on the same heading
+the original file already had immediately after it). No content was lost;
+the duplicate's body was identical ("Status: not started").
+
+**Commit:** `migration: phase 10 - azure ai provider`
 
 ---
 

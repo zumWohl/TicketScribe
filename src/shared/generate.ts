@@ -3,7 +3,7 @@
 // already passed scrubText()/maskedOcrText(), model/URL settings (not keys),
 // and template *content* (not a key) from localStorage. API keys never leave
 // the main process -- see src/main/keys.ts.
-export type ProviderId = 'ollama' | 'claude' | 'echo';
+export type ProviderId = 'ollama' | 'claude' | 'azure' | 'echo';
 
 export interface GenerateFrame {
   timestamp: number;
@@ -17,12 +17,18 @@ export interface OllamaSettings {
   textModel: string;
 }
 
+export interface AzureSettings {
+  endpoint: string;
+  deployment: string;
+}
+
 export interface GenerateRequest {
   provider: ProviderId;
   frames: GenerateFrame[];
   activityTimelineText: string;
   templateContent: string;
   ollama?: OllamaSettings;
+  azure?: AzureSettings;
 }
 
 export type GenerateResponse = string; // the finished work-note text

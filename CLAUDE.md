@@ -112,13 +112,17 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
    renderer only ever sends non-secret data: masked+downscaled image data
    URLs, scrubbed OCR/timeline text, and model/URL settings (never keys).
    **Ollama stays the default** (two-step shape: per-frame VLM description,
-   then a text-summary call). **Claude is an optional, user-selected
-   alternative** (`summaryModel` setting) that does both in a single
-   Anthropic Messages API call. **A hidden `echo` provider** exists only
-   for automated tests, reachable only when the main process starts with
-   `CARDONETCAPTURE_TEST_PROVIDER=echo` — the renderer's `summaryModel` state
-   typing only ever normalizes to `'claude' | 'ollama'`, so there is no way
-   to select it from the UI; tests invoke it via
+   then a text-summary call). **Claude and Azure OpenAI are optional,
+   user-selected alternatives** (`summaryModel` setting) that each do the
+   whole thing in a single call: Claude via the Anthropic Messages API,
+   Azure via its unified `/openai/v1/chat/completions` route (deployment
+   name passed as `model`, **not** the deprecated
+   `services.ai.azure.com/models` route). **A hidden `echo` provider**
+   exists only for automated tests, reachable only when the main process
+   starts with `CARDONETCAPTURE_TEST_PROVIDER=echo` — the renderer's
+   `summaryModel` state typing only ever normalizes to
+   `'claude' | 'azure' | 'ollama'`, so there is no way to select it from the
+   UI; tests invoke it via
    `window.cardonetCapture.generate({ provider: 'echo', ... })` directly.
    **All providers throw on failure — nothing silently falls back to a raw
    OCR dump presented as a finished summary.** On failure the processing
@@ -194,11 +198,42 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
 generation work fully without it.
 
 **Settings** persist to `localStorage` (same key names as before the port):
-Ollama fields, `summaryModel` (`ollama` default), `anthropicApiKey` (now
-unused for storage — see below — but the field still exists in Settings UI
-state), three capture toggles, `transcriptEnabled`, `scrubClientNames`.
-**API keys are no longer in `localStorage`** — `setApiKey`/`hasApiKey` write
-to the `safeStorage`-encrypted main-process store instead.
+Ollama fields, `azureEndpoint`/`azureDeployment` (non-secret), `summaryModel`
+(`ollama` default), three capture toggles, `transcriptEnabled`,
+`scrubClientNames`. **API keys never touch `localStorage`**: the Anthropic
+and Azure key input fields are plain transient React state that start blank
+on every launch (the real key can never be read back from `safeStorage`
+into the renderer), and `saveSettings()` only forwards a non-blank field to
+`setApiKey('claude' | 'azure', key)`, which writes to the
+`safeStorage`-encrypted main-process store. A blank field on save means
+"leave the existing key alone", not "clear it". `hasApiKey()` drives a
+"saved" label next to each field so the user isn't left guessing whether a
+key already exists.
+
+## Azure OpenAI (`src/main/providers/azure.ts`)
+
+Third summary provider, added in Phase 10. Settings adds an "Azure OpenAI
+Configuration" card (endpoint, deployment name, API key) plus a **Test
+connection** button that calls the real `generate()` IPC path with a tiny
+1x1 test image, which is how "the deployment accepts images" gets validated,
+rather than an automatic call on every unrelated Settings save. Distinct
+error messages for 401 (bad key), 403 (access denied), 404 (deployment not
+found), 429 (rate limit), and both the 4xx-with-`error.code === 'content_filter'`
+and the 200-with-`finish_reason === 'content_filter'` shapes Azure uses to
+signal a content-filter rejection. Same throw-on-failure contract as every
+other provider.
+
+- **Key rotation**: Azure OpenAI resources issue two keys (`key1`/`key2`)
+  specifically so one can be rotated while the other stays live. Paste
+  either one into the API key field. CardonetCapture only ever stores
+  whichever key was last saved, so rotate by generating a new key in the
+  Azure portal, pasting it into Settings, saving, then regenerating the
+  old one once the new one round-trips the Test connection check.
+- **UK South provisioning**: when provisioning the Azure OpenAI resource,
+  confirm the target region/deployment actually supports vision-capable
+  chat completions (e.g. a `gpt-4o`-family deployment). Not every region
+  offers every model, and a region that's fine for text-only deployments
+  may not have image support available.
 
 ## Tesseract (vendored, not CDN)
 
@@ -220,7 +255,10 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
 - `getUserMedia` constraints for desktop capture must use the `mandatory: {}`
   wrapper — top-level constraints silently fall back to webcam.
 - The base64 image sent to Ollama/Claude must have the
-  `data:image/…;base64,` prefix stripped: `dataUrl.split(',')[1]`.
+  `data:image/…;base64,` prefix stripped: `dataUrl.split(',')[1]`. Azure
+  OpenAI's `image_url` content part is the opposite: it wants the **full**
+  data URL (prefix included), matching the OpenAI chat-completions image
+  format. Don't "fix" one to match the other.
 - **Never silently substitute raw OCR text for a real summary.** All
   providers in `src/main/providers/` must throw on failure;
   `showGenerationFailure()` in `App.tsx` is the only path that surfaces OCR
@@ -267,21 +305,15 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
 
 This codebase was ported from a plain CommonJS Electron app
 (`nodeIntegration: true`, no bundler, hand-rolled CSS) to TypeScript +
-React + Tailwind v4 + Vite, following `MIGRATION.md`. **Phases Gate 0
-through 8 are complete** (see `MIGRATION-REPORT.md` for the full per-phase
-log, including deviations and real bugs found along the way); the legacy
-`main.js`/`main/events-capture.js`/`renderer/*` files no longer exist.
-Remaining: Phase 9 (rename to CardonetCapture) and Phase 10 (Azure AI
-provider). Rules still in force for those:
-- Never make a gate pass by weakening a test: no editing, skipping or
-  deleting assertions, thresholds or screenshot baselines, no `.skip`, no
-  `|| true`.
-- Redaction is safety-critical. `npm test` (mask-verify) must pass at
-  every gate.
-- Do not upgrade `electron`, `better-sqlite3`, or `tesseract.js`. Do not
-  run `npm audit fix --force`.
-- Never `git push`, `git tag`, or merge into `main`.
-- If a gate fails after 3 genuine attempts, or passing would break a rule
-  here, stop: commit WIP, write the reason in `MIGRATION-REPORT.md`, and
-  end the run.
-- Keep `MIGRATION-REPORT.md` updated after every phase.
+React + Tailwind v4 + Vite, following `MIGRATION.md`. **All phases, Gate 0
+through Phase 10, are complete** (see `MIGRATION-REPORT.md` for the full
+per-phase log, including deviations and real bugs found along the way); the
+legacy `main.js`/`main/events-capture.js`/`renderer/*` files no longer
+exist. Two rules from that run stay in force permanently, independent of
+the migration itself:
+- Redaction is safety-critical. `npm test` (mask-verify) must pass before
+  any change to `lib/redact.ts` or the masking pipeline ships.
+- Do not upgrade `electron`, `better-sqlite3`, or `tesseract.js` without a
+  deliberate, separately-reviewed decision. These three are the ones most
+  likely to silently break OCR, redaction, or packaging if bumped in
+  passing.

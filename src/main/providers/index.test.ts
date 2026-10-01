@@ -51,6 +51,17 @@ describe('generate: image size guard (decision: proves downscale ran)', () => {
   });
 });
 
+describe('generate: azure dispatch', () => {
+  it('reaches azure.generate and surfaces its missing-settings error', async () => {
+    await expect(generate({
+      provider: 'azure',
+      frames: [],
+      activityTimelineText: '',
+      templateContent: '',
+    })).rejects.toThrow(/endpoint\/deployment not set/);
+  });
+});
+
 describe('generate: echo provider (decision 10)', () => {
   it('is unreachable without CARDONETCAPTURE_TEST_PROVIDER=echo', async () => {
     await expect(generate({
