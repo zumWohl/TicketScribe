@@ -199,7 +199,84 @@ there before committing.
 
 ## Phase 2 - Preload and main-process providers
 
-**Status: not started**
+**Status: COMPLETE**
+
+Added `src/preload/index.ts` (the exact bridge shape from the plan, with the
+`process.contextIsolated` fallback since isolation stays off until Phase 6a)
+and `src/preload/index.d.ts` (global `Window.ticketScribe` typing, pulled
+into `tsconfig.web.json`'s `include` since Phase 6a's renderer will need it).
+Wired `preload: path.join(__dirname, '..', 'preload', 'index.js')` into the
+`src/main/index.ts` BrowserWindow.
+
+New `src/main/providers/`: `rules.ts` (`SUMMARY_RULES` +
+`buildTimelinePrompt`, byte-identical rules text, `templateContent` now
+arrives as a plain string in the IPC payload instead of a `localStorage`
+read, since main can't read `localStorage`), `ollama.ts` (`describeFrame` +
+`generateTextSummary` + a `runOllamaPipeline` helper), `claude.ts` (same
+request shape, `model: 'claude-sonnet-5'` preserved verbatim), `echo.ts`
+(decision 10's test provider), `index.ts` (dispatcher + the
+`nativeImage.createFromDataURL(...).getSize()` oversized-image guard against
+`MODEL_IMAGE_MAX_DIMENSION` from the new `src/shared/image.ts`). New
+`src/main/keys.ts`: `safeStorage`-encrypted API keys in
+`<userData>/provider-keys.json`; only `setApiKey`/`hasApiKey` are exposed
+over IPC, `getApiKey` is main-process-internal (used only by `claude.ts`).
+`src/main/index.ts` registers `generate`, `keys:set`, `keys:has`.
+
+**Renderer changes (the sanctioned Phase 2 bridge-repointing exception):**
+all 9 `ipcRenderer.invoke` call sites in `renderer/app.js` now go through
+`window.ticketScribe.*`; the top-level `require('electron').ipcRenderer` is
+gone (nothing else in app.js used it). `require('./providers')` is gone —
+`renderer/providers.js` itself is untouched but now unreferenced dead code,
+left in place deliberately: Phase 8 is where all legacy renderer files get
+deleted together, not before.
+
+**Deviation (an explicit consequence of decision 6, not a bug):** the old
+two-step Ollama flow (local `describeFrame` per frame with live "Describing
+frame X of Y" progress, then a local `generateSummary` call) and the
+one-shot local Claude call are replaced by a single
+`window.ticketScribe.generate(request)` IPC call per generation. Fine-grained
+per-frame progress text is lost (the processing stage now shows one
+"Sending redacted frames to Ollama/Claude" step instead of incrementing
+through each frame) because the `generate` channel the plan specifies is a
+single request/response `invoke`, not a streaming one, and the plan's preload
+API has no separate progress-event method. The feature itself (generate,
+fail loudly, offer the raw-OCR fallback) is unchanged. `generateSummary()`
+also gained a small renderer-local `activeTemplateContentForGenerate()`
+(reusing app.js's own existing `loadTemplates()`/`getActiveTemplateId()`
+helpers) to read the active template's content before sending it in the
+payload, since that replaces `providers.js`'s `activeTemplateContent()`.
+
+**Operational note:** the first Phase 2 Playwright run leaked a real
+`provider-keys.json` (containing the test's fake Anthropic key) into
+`%APPDATA%\Electron\` — Playwright's `_electron.launch({ args: [path] })`
+against a loose script doesn't resolve an app identity the way a packaged
+app does, so Electron fell back to the generic `Electron` userData folder
+rather than `ticketscribe`. Deleted that file immediately and added a
+`--user-data-dir=<temp>` switch to every launch in
+`e2e/phase2-providers.spec.ts` so no test run touches real user data again.
+
+### Gate results
+
+- `npm test` (mask-verify) — **PASS**.
+- `npm run typecheck` — **PASS**.
+- `npm run test:unit` — **PASS**, 15/15 (new: `ollama.test.ts` request-shape +
+  error-message cases, `claude.test.ts` request-shape + 401/refusal cases,
+  `index.test.ts` oversized-image rejection + echo-provider gating, with
+  `electron` mocked via `vi.mock` since vitest runs under plain Node, not a
+  real Electron process).
+- `npx electron-builder --dir` — **PASS**.
+- `e2e/phase2-providers.spec.ts` (new) — **PASS**: API key round-trips
+  through `safeStorage` across a restart, the key string appears in neither
+  `localStorage` nor a window-property/DOM-HTML scan; `generate()` reaches
+  the echo provider end to end over IPC; echo is confirmed unreachable
+  without `TICKETSCRIBE_TEST_PROVIDER=echo`.
+- `e2e/phase1-ts-main.spec.ts` re-run — **PASS**, visual parity holds (app.js
+  changes were IPC-target-only, no markup/CSS touched).
+- **Real-provider check:** neither `ANTHROPIC_API_KEY` nor a reachable Ollama
+  at `http://localhost:11434` were available in this environment — **not
+  run, no credentials**, per the plan's fallback instruction.
+
+**Commit:** `migration: phase 2 - preload and main-process providers`
 
 ---
 

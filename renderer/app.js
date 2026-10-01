@@ -1,5 +1,6 @@
 // ─── Electron bridge ────────────────────────────────────────────────────────
-const { ipcRenderer } = require('electron');
+// IPC now goes through the contextBridge-exposed window.ticketScribe API
+// (src/preload/index.ts) instead of a direct ipcRenderer require.
 const path = require('path');
 const { pathToFileURL } = require('url');
 // Tesseract must run from its BROWSER build here. This renderer uses
@@ -13,7 +14,6 @@ const { pathToFileURL } = require('url');
 const { createWorker } = require('tesseract.js/dist/tesseract.min.js');
 const TESSERACT_WORKER_PATH = pathToFileURL(path.join(path.dirname(require.resolve('tesseract.js/dist/tesseract.min.js')), 'worker.min.js')).href;
 const TESSERACT_CORE_PATH = pathToFileURL(path.dirname(require.resolve('tesseract.js-core/tesseract-core.wasm.js'))).href + '/';
-const { providers } = require('./providers');
 const { scrubText, scrubEvents, findSensitiveWords } = require('./scrub-timeline');
 const { maskAndDownscale, MODEL_IMAGE_MAX_DIMENSION } = require('./redact');
 
@@ -238,7 +238,7 @@ function hamming(h1, h2) {
 async function populateWindows() {
   const sel = $('window-select');
   try {
-    const sources = await ipcRenderer.invoke('get-sources', { types: ['window'] });
+    const sources = await window.ticketScribe.getSources({ types: ['window'] });
     if (!sources.length) {
       sel.innerHTML = '<option value="">No capturable windows found</option>';
       return;
@@ -263,7 +263,7 @@ async function populateScreens() {
   const picker = $('screen-picker');
   let sources = [];
   try {
-    sources = await ipcRenderer.invoke('get-sources', { types: ['screen'] });
+    sources = await window.ticketScribe.getSources({ types: ['screen'] });
   } catch {
     sel.innerHTML = '<option value="">Could not list displays</option>';
     picker.style.display = 'none';
@@ -293,7 +293,7 @@ async function resolveSourceId() {
     const id = $('window-select').value;
     if (id) return id;
     // fall through to picking the first window if the select is empty
-    const wins = await ipcRenderer.invoke('get-sources', { types: ['window'] });
+    const wins = await window.ticketScribe.getSources({ types: ['window'] });
     if (wins.length) return wins[0].id;
     throw new Error('No capturable window is available. Try "Entire screen" instead.');
   }
@@ -301,7 +301,7 @@ async function resolveSourceId() {
   // falling back to the first/primary screen for a single-display setup.
   const chosen = $('screen-select').value;
   if (chosen) return chosen;
-  const screens = await ipcRenderer.invoke('get-sources', { types: ['screen'] });
+  const screens = await window.ticketScribe.getSources({ types: ['screen'] });
   if (!screens.length) throw new Error('No screen sources found.');
   return screens[0].id;
 }
@@ -875,58 +875,42 @@ async function generateSummary() {
   keyframes = [];
 
   procStep(2);
-  setProgress(45, 'Sending redacted frames to the model');
+  setProgress(45, providerId === 'claude' ? 'Sending redacted frames to Claude' : 'Sending redacted frames to Ollama');
 
-  if (providerId === 'claude') {
-    await runClaudePipeline(sendFrames, rawFallbackText);
-  } else {
-    await runOllamaPipeline(sendFrames, rawFallbackText);
-  }
-}
-
-async function runOllamaPipeline(sendFrames, rawFallbackText) {
-  const descriptions = [];
-  let lastVlmError = null;
-  for (let i = 0; i < sendFrames.length; i++) {
-    setProgress(45 + (i / sendFrames.length) * 35, `Describing frame ${i + 1} of ${sendFrames.length}`);
-    try {
-      const text = await providers.ollama.describeFrame(sendFrames[i].dataUrl, sendFrames[i].ocrText);
-      descriptions.push({ timestamp: sendFrames[i].timestamp, text });
-    } catch (err) {
-      lastVlmError = err;
-    }
-  }
-
-  if (descriptions.length === 0) {
+  // Provider calls (Ollama fetch, Anthropic fetch, API keys) all live in the
+  // main process now — see src/main/providers/. The renderer only ever sends
+  // non-secret data: masked+downscaled frames, scrubbed OCR/timeline text,
+  // and model/URL settings.
+  try {
+    const summary = await window.ticketScribe.generate({
+      provider: providerId,
+      frames: sendFrames,
+      activityTimelineText,
+      templateContent: activeTemplateContentForGenerate(),
+      ollama: providerId === 'ollama' ? {
+        url: ls('ollamaUrl', 'http://localhost:11434'),
+        vlmModel: ls('vlmModel', 'llava'),
+        textModel: ls('textModel', 'llama3'),
+      } : undefined,
+    });
+    procStep(2, 'done');
+    procStep(3, 'done');
+    setProgress(100, 'Done');
+    finishWithSummary(summary);
+  } catch (err) {
     procStep(2); // leave send step spinning-as-error context
-    setProgress(80, 'Frame analysis failed');
-    showGenerationFailure(lastVlmError ? lastVlmError.message : 'No descriptions generated — is Ollama running?', rawFallbackText);
-    return;
-  }
-  procStep(3);
-  setProgress(85, 'Generating summary from the frame sequence');
-  try {
-    const summary = await providers.ollama.generateSummary(descriptions, activityTimelineText);
-    procStep(3, 'done');
-    setProgress(100, 'Done');
-    finishWithSummary(summary);
-  } catch (err) {
-    showGenerationFailure(err.message, rawFallbackText || descriptions.map(d => d.text).join('\n\n'));
-  }
-}
-
-async function runClaudePipeline(sendFrames, rawFallbackText) {
-  procStep(3);
-  setProgress(70, 'Generating summary with Claude');
-  try {
-    const ocrTexts = sendFrames.map(f => f.ocrText);
-    const summary = await providers.claude.generate(sendFrames, ocrTexts, activityTimelineText);
-    procStep(3, 'done');
-    setProgress(100, 'Done');
-    finishWithSummary(summary);
-  } catch (err) {
+    setProgress(80, 'Generation failed');
     showGenerationFailure(err.message, rawFallbackText);
   }
+}
+
+// providers.js's activeTemplateContent(), reusing app.js's own template
+// storage helpers instead of re-reading localStorage a second way.
+function activeTemplateContentForGenerate() {
+  const id = getActiveTemplateId();
+  if (!id) return '';
+  const t = loadTemplates().find(x => x.id === id);
+  return t && t.content ? String(t.content).trim() : '';
 }
 
 function finishWithSummary(summary) {
@@ -992,7 +976,7 @@ document.querySelectorAll('.coming-soon').forEach(el => {
 // Settings
 $('btn-save-settings').addEventListener('click', () => { saveSettings(); setScreen('work'); });
 $('btn-copy-transcript-snippet').addEventListener('click', async () => {
-  const snippet = await ipcRenderer.invoke('events:get-transcript-snippet');
+  const snippet = await window.ticketScribe.getTranscriptSnippet();
   await navigator.clipboard.writeText(snippet);
   const btn = $('btn-copy-transcript-snippet');
   const original = btn.textContent;
@@ -1075,7 +1059,7 @@ async function beginRecording() {
 
   ensureOCRWorker().catch(() => {});
 
-  ipcRenderer.invoke('events:start', {
+  window.ticketScribe.eventsStart({
     window: ls('captureWindow', 'true') === 'true',
     transcript: ls('transcriptEnabled', 'false') === 'true',
   }).catch(() => {});
@@ -1091,7 +1075,7 @@ $('btn-stop').addEventListener('click', async () => {
 
   let rawEvents = [];
   try {
-    rawEvents = await ipcRenderer.invoke('events:stop', {
+    rawEvents = await window.ticketScribe.eventsStop({
       terminal: ls('captureTerminal', 'true') === 'true',
       browserHistory: ls('captureBrowser', 'true') === 'true',
     });
@@ -1160,7 +1144,7 @@ $('btn-save').addEventListener('click', async () => {
     summary,
     '',
   ].join('\n');
-  const result = await ipcRenderer.invoke('save-summary', { filename, content });
+  const result = await window.ticketScribe.saveSummary({ filename, content });
   const note = $('save-note');
   if (!result.ok) {
     note.classList.remove('hidden');
@@ -1179,7 +1163,7 @@ $('btn-copy').addEventListener('click', async () => {
   btn.textContent = 'Copied!';
   setTimeout(() => { btn.textContent = original; }, 1500);
 });
-$('btn-open-folder').addEventListener('click', () => ipcRenderer.invoke('open-folder'));
+$('btn-open-folder').addEventListener('click', () => window.ticketScribe.openFolder());
 $('btn-new').addEventListener('click', () => { resetToReady(); });
 
 // ─── Init ────────────────────────────────────────────────────────────────────

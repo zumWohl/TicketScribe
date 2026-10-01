@@ -3,6 +3,9 @@ import path from 'path';
 import fs from 'fs';
 import * as eventsCapture from './events-capture';
 import type { EventsStartOptions, EventsStopOptions } from '../shared/events';
+import type { GenerateRequest } from '../shared/generate';
+import * as providers from './providers';
+import * as keys from './keys';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -18,6 +21,7 @@ function createWindow(): void {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      preload: path.join(__dirname, '..', 'preload', 'index.js'),
     },
   });
 
@@ -96,6 +100,19 @@ ipcMain.handle('events:stop', (_e, opts: EventsStopOptions) => {
 });
 ipcMain.handle('events:get-transcript-snippet', () => {
   return eventsCapture.getTranscriptProfileSnippet();
+});
+
+// Summary generation (Ollama/Claude/echo) -- moved to the main process so API
+// keys and the fetch itself never touch the renderer/CSP. See
+// src/main/providers/index.ts for the dispatcher.
+ipcMain.handle('generate', (_e, request: GenerateRequest) => {
+  return providers.generate(request);
+});
+ipcMain.handle('keys:set', (_e, provider: string, key: string) => {
+  keys.setApiKey(provider, key);
+});
+ipcMain.handle('keys:has', (_e, provider: string) => {
+  return keys.hasApiKey(provider);
 });
 
 app.whenReady().then(createWindow);
