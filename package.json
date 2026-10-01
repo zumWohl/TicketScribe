@@ -11,7 +11,7 @@
     "dist": "electron-builder --win nsis --x64 --publish never"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.6.0",
+    "@electron/rebuild": "^4.2.0",
     "electron": "^42.5.0",
     "electron-builder": "^26.15.3"
   },
