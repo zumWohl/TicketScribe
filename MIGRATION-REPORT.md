@@ -55,7 +55,63 @@ sensible number; recorded here as a TODO so it isn't forgotten).
 
 ## Phase 0 - Scaffolding alongside the legacy app
 
-**Status: not started**
+**Status: COMPLETE**
+
+Toolchain installed: `electron-vite@5.0.0`, `vite@7.3.6`, `typescript@7.0.2`,
+`@vitejs/plugin-react@5.2.0`, `tailwindcss@4.3.3`, `@tailwindcss/vite@4.3.3`,
+`vitest@5.0.3`, `@types/node`, `@types/react`, `@types/react-dom` (all
+devDependencies); `react@19.3.0` + `react-dom@19.3.0` as runtime
+`dependencies` per decision in the plan.
+
+**Deviation:** `npm install -D vite @vitejs/plugin-react` at their unpinned
+latest (`vite@8`, `@vitejs/plugin-react@6`) produced an unresolvable peer
+conflict with `electron-vite@5` (which peers on `vite ^5||^6||^7`). Pinned
+`vite@^7` and `@vitejs/plugin-react@^5.2.0` (the last line compatible with
+Vite 7) instead. No functional difference for this plan; recorded since it's
+a version choice the plan didn't make explicitly.
+
+Files added: `electron.vite.config.ts` (main/preload/renderer entries,
+renderer `root: 'src/renderer'`, `base: './'`); `tsconfig.json` (solution
+file) + `tsconfig.node.json` (main/preload, `strict: true`) +
+`tsconfig.web.json` (renderer, DOM lib, `strict: true`); stub
+`src/main/index.ts`, `src/preload/index.ts` (empty export, real bridge is
+Phase 2), `src/renderer/index.html` (CSP meta tag exactly as specified) +
+`src/renderer/src/{main.tsx,App.tsx,index.css}`; `vitest.config.ts` (unit
+tests scoped to `src/**/*.{test,spec}.ts(x)` so Vitest never collects the
+`e2e/` Playwright specs — they use a different `test()` identity and
+Playwright itself errors if Vitest imports them; `passWithNoTests: true`
+since no unit tests exist before Phase 1); `.github/workflows/ci.yml` (new,
+`release.yml` untouched).
+
+New scripts added, legacy `start`/`dev`/`dist`/`rebuild`/`test` untouched:
+`dev:vite`, `build:vite`, `typecheck`, `test:unit`, `test:e2e`.
+
+### Gate results
+
+- `npm test` (mask-verify) — **PASS**.
+- `npm run typecheck` — **PASS**, zero errors across both configs.
+- `npm run build:vite` — **PASS**. Output lands exactly at `out/main/index.js`,
+  `out/preload/index.js`, `out/renderer/index.html` — matches the paths later
+  phases assume. One harmless warning (`Generated an empty chunk: "index"`)
+  from the preload stub, which only does `export {}` until Phase 2.
+- `e2e/stub-smoke.spec.ts` (new) — **PASS**. Launches `out/main/index.js`
+  directly, asserts zero console errors and zero CSP violations.
+- `npx electron-builder --dir` — **PASS**, produced
+  `dist/win-unpacked/TicketScribe.exe`. Still packages the **legacy** app
+  (package.json `main` stays `main.js` per the plan's constraint; nothing in
+  Phase 0 repoints it). `e2e/packaged-legacy-smoke.spec.ts` (new) drives that
+  exe directly and asserts the legacy `ready` stage loads — a packaging
+  regression check that the much larger devDependency tree (and react/react-dom
+  now in `dependencies`) didn't break electron-builder.
+- `e2e/legacy-baseline.spec.ts` against `npm start` — **PASS**, re-verified
+  unchanged. **Important:** re-running this spec regenerates
+  `e2e/baseline/*.png` on disk (new screenshots, same content modulo timing
+  noise) — did so once by accident here and restored the Gate-0-committed
+  versions with `git checkout -- e2e/baseline` before committing. Future
+  phases must not re-run `legacy-baseline.spec.ts`; only compare a *new*
+  packaged-app spec's screenshots against the frozen Gate 0 images.
+
+**Commit:** `migration: phase 0 - scaffolding alongside legacy app`
 
 ---
 

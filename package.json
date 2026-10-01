@@ -8,17 +8,34 @@
     "dev": "electron . --inspect",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "test": "electron test/run-mask-verify.js",
-    "dist": "electron-builder --win nsis --x64 --publish never"
+    "dist": "electron-builder --win nsis --x64 --publish never",
+    "dev:vite": "electron-vite dev",
+    "build:vite": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
     "@playwright/test": "^1.63.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "electron": "^42.5.0",
     "electron-builder": "^26.15.3",
-    "playwright": "^1.63.0"
+    "electron-vite": "^5.0.0",
+    "playwright": "^1.63.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^5.0.3"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "tesseract.js": "^5.1.1"
   }
 }
