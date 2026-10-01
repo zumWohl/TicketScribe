@@ -19,17 +19,22 @@ const { createWorker } = require('tesseract.js/dist/tesseract.min.js');
 const TESSERACT_WORKER_PATH = pathToFileURL(path.join(path.dirname(require.resolve('tesseract.js/dist/tesseract.min.js')), 'worker.min.js')).href;
 const TESSERACT_CORE_PATH = pathToFileURL(path.dirname(require.resolve('tesseract.js-core/tesseract-core.wasm.js'))).href + '/';
 
-const EXPECTED_TEXT = 'TICKETSCRIBE OCR VERIFY 12345';
+const EXPECTED_TEXT = 'CARDONETCAPTURE OCR VERIFY 12345';
 
 function makeTextCanvas(text) {
+  const font = '48px Arial, sans-serif';
+  const measure = document.createElement('canvas').getContext('2d');
+  measure.font = font;
+  const textWidth = measure.measureText(text).width;
+
   const c = document.createElement('canvas');
-  c.width = 900;
+  c.width = Math.ceil(textWidth) + 60;
   c.height = 160;
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, c.width, c.height);
   ctx.fillStyle = '#000000';
-  ctx.font = '48px Arial, sans-serif';
+  ctx.font = font;
   ctx.textBaseline = 'middle';
   ctx.fillText(text, 30, c.height / 2);
   return c;

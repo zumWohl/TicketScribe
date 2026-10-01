@@ -16,7 +16,7 @@ declare global {
   }
 }
 
-const EXPECTED_TEXT = 'TICKETSCRIBE VENDORED OCR WORKS';
+const EXPECTED_TEXT = 'CARDONETCAPTURE VENDORED OCR WORKS';
 
 function makeTextCanvas(text: string): HTMLCanvasElement {
   const c = document.createElement('canvas');

@@ -1,5 +1,5 @@
 {
-  "name": "ticketscribe",
+  "name": "cardonetcapture",
   "version": "0.1.0",
   "description": "Automated work-log capture with local VLM analysis",
   "main": "out/main/index.js",

@@ -49,7 +49,7 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class TicketScribeWin32 {
+public class CardonetCaptureWin32 {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
@@ -57,11 +57,11 @@ public class TicketScribeWin32 {
 "@
 while ($true) {
   try {
-    $hwnd = [TicketScribeWin32]::GetForegroundWindow()
+    $hwnd = [CardonetCaptureWin32]::GetForegroundWindow()
     $sb = New-Object System.Text.StringBuilder 512
-    [TicketScribeWin32]::GetWindowText($hwnd, $sb, $sb.Capacity) | Out-Null
+    [CardonetCaptureWin32]::GetWindowText($hwnd, $sb, $sb.Capacity) | Out-Null
     $procId = 0
-    [TicketScribeWin32]::GetWindowThreadProcessId($hwnd, [ref]$procId) | Out-Null
+    [CardonetCaptureWin32]::GetWindowThreadProcessId($hwnd, [ref]$procId) | Out-Null
     $procName = ""
     try { $procName = (Get-Process -Id $procId -ErrorAction Stop).ProcessName } catch {}
     $title = $sb.ToString() -replace "\\|", "/"
@@ -202,7 +202,7 @@ function diffPsHistory(snapshot: PsHistorySnapshot | null): string[] {
 }
 
 // ─── Terminal: opt-in PowerShell transcript (command + output) ────────────
-// TicketScribe cannot force an already-open shell to start transcribing
+// Cardonet Capture cannot force an already-open shell to start transcribing
 // itself -- this only works for sessions that source a one-time profile
 // snippet (see getTranscriptProfileSnippet). It's opt-in because it writes a
 // transcript file to disk; the Settings toggle discloses that.
@@ -214,7 +214,7 @@ function diffPsHistory(snapshot: PsHistorySnapshot | null): string[] {
 // without the actual commands typed.
 
 function getTranscriptDir(): string {
-  const dir = path.join(os.tmpdir(), 'ticketscribe-transcripts');
+  const dir = path.join(os.tmpdir(), 'cardonetcapture-transcripts');
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* already exists */ }
   return dir;
 }
@@ -222,8 +222,8 @@ function getTranscriptDir(): string {
 export function getTranscriptProfileSnippet(): string {
   const dir = getTranscriptDir().replace(/\\/g, '\\\\');
   return [
-    'if (-not $global:TicketScribeTranscriptStarted) {',
-    '  $global:TicketScribeTranscriptStarted = $true',
+    'if (-not $global:CardonetCaptureTranscriptStarted) {',
+    '  $global:CardonetCaptureTranscriptStarted = $true',
     `  $dir = "${dir}"`,
     '  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }',
     '  Start-Transcript -Path (Join-Path $dir ("transcript-$PID-" + (Get-Date -Format yyyyMMdd-HHmmss) + ".txt")) -Append | Out-Null',
@@ -288,7 +288,7 @@ interface BrowserVisit {
 function queryBrowserHistory(historyDbPath: string, startMs: number, endMs: number): BrowserVisit[] {
   if (!sqlite3) return [];
   // Copy first: the History file is locked while the browser holds it open.
-  const tmpCopy = path.join(os.tmpdir(), `ticketscribe-history-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+  const tmpCopy = path.join(os.tmpdir(), `cardonetcapture-history-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
   let db: Sqlite3Database | null = null;
   try {
     fs.copyFileSync(historyDbPath, tmpCopy);

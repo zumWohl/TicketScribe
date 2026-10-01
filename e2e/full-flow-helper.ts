@@ -1,7 +1,7 @@
 // Shared record -> review -> mask -> generate -> save walkthrough, used by
 // both Phase 6a's gate (against out/main/index.js directly) and Phase 7's
 // gate (against the actual packaged --dir exe). See phase6a-full-flow.spec.ts
-// for why generation goes through window.ticketScribe.generate directly
+// for why generation goes through window.cardonetCapture.generate directly
 // (echo provider) rather than clicking "Generate summary".
 import { expect, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'fs';
@@ -61,7 +61,7 @@ export async function runFullFlow(app: ElectronApplication): Promise<FullFlowRes
   expect(Number(maskedTotalText || '0')).toBeGreaterThan(0);
 
   const result = await page.evaluate(async () => {
-    const summary = await window.ticketScribe.generate({
+    const summary = await window.cardonetCapture.generate({
       provider: 'echo',
       frames: [{ timestamp: Date.now(), dataUrl: 'data:image/jpeg;base64,AAAA', ocrText: '' }],
       activityTimelineText: '',
@@ -69,7 +69,7 @@ export async function runFullFlow(app: ElectronApplication): Promise<FullFlowRes
     });
     const filename = `ticket-e2e-fullflow-${Date.now()}.txt`;
     const content = `Cardonet Capture — Work Note\n${'='.repeat(40)}\n\n${summary}\n`;
-    const saveResult = await window.ticketScribe.saveSummary({ filename, content });
+    const saveResult = await window.cardonetCapture.saveSummary({ filename, content });
     return { summary, saveResult };
   });
 

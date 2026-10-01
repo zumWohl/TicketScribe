@@ -1,5 +1,5 @@
 // Decision 10: when the main process starts with
-// TICKETSCRIBE_TEST_PROVIDER=echo, the `generate` handler returns a fixed,
+// CARDONETCAPTURE_TEST_PROVIDER=echo, the `generate` handler returns a fixed,
 // deterministic summary built from its inputs (image count, timeline
 // length) instead of calling a network provider. Exists only for automated
 // (Playwright) tests -- src/main/providers/index.ts only reaches this when

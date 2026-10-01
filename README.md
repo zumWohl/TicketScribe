@@ -39,7 +39,7 @@ The workflow has three steps: Record, Review and redact, then Summary.
 
 1. Record. Choose a capture source: a single window, or an entire screen (with a display picker when more than one monitor is connected). A keyframe is captured about every 1.5 seconds, and near-identical frames are dropped using a perceptual hash, so only frames that actually changed are kept. There is no frame cap. After 30 minutes you get a dismissable notice that the recording is long, and recording continues.
 2. Review and redact. Every keyframe is run through OCR (Tesseract) and scanned for sensitive values, which are pre-masked with pink boxes. You can draw new masks, drag, resize, or delete any box, zoom and pan to check small text, and drop whole frames. The preview always shows the masked render.
-3. Summary. The kept frames go to your chosen model and come back as a bullet-point work note. It is saved to `Documents/TicketScribe/`.
+3. Summary. The kept frames go to your chosen model and come back as a bullet-point work note. It is saved to `Documents/CardonetCapture/`.
 
 ### Sensitive-data redaction
 
@@ -75,7 +75,7 @@ keeps fewer.
 - Activity capture toggles (window, terminal, transcript, browser).
 - Client names to redact (comma-separated).
 
-Generated notes are written to `%USERPROFILE%\Documents\TicketScribe\`.
+Generated notes are written to `%USERPROFILE%\Documents\CardonetCapture\`.
 
 
 ## Notes and limitations

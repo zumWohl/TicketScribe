@@ -12,17 +12,17 @@ import os from 'os';
 import { runFullFlow } from './full-flow-helper';
 
 const repoRoot = path.resolve(__dirname, '..');
-const exePath = path.join(repoRoot, 'dist', 'win-unpacked', 'TicketScribe.exe');
+const exePath = path.join(repoRoot, 'dist', 'win-unpacked', 'CardonetCapture.exe');
 
 test('packaged exe: full record -> review -> mask -> generate -> save pipeline', async () => {
   test.setTimeout(120000);
   expect(fs.existsSync(exePath), `expected ${exePath} to exist -- run npm run dist or electron-builder --dir first`).toBe(true);
 
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticketscribe-e2e-userdata-'));
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cardonetcapture-e2e-userdata-'));
   const app = await electron.launch({
     executablePath: exePath,
     args: [`--user-data-dir=${userDataDir}`],
-    env: { ...process.env, TICKETSCRIBE_TEST_PROVIDER: 'echo' },
+    env: { ...process.env, CARDONETCAPTURE_TEST_PROVIDER: 'echo' },
   });
 
   const { consoleErrors, cspViolations } = await runFullFlow(app);

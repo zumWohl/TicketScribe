@@ -2,9 +2,9 @@
 // directly) -- pick a window source, record ~5s, assert at least one
 // keyframe captured, draw one mask on the review canvas, generate a
 // summary, assert it appears, save, assert a file exists under
-// Documents\TicketScribe with the expected content, then delete it.
+// Documents\CardonetCapture with the expected content, then delete it.
 // See full-flow-helper.ts for the walkthrough itself and why generation
-// goes through window.ticketScribe.generate directly (echo provider)
+// goes through window.cardonetCapture.generate directly (echo provider)
 // rather than clicking "Generate summary".
 import { test, expect, _electron as electron } from '@playwright/test';
 import path from 'path';
@@ -17,10 +17,10 @@ const mainEntry = path.join(repoRoot, 'out/main/index.js');
 
 test('full record -> review -> mask -> generate -> save pipeline', async () => {
   test.setTimeout(120000); // real OCR over real screen-capture frames, plus a possible retry
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticketscribe-e2e-userdata-'));
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cardonetcapture-e2e-userdata-'));
   const app = await electron.launch({
     args: [mainEntry, `--user-data-dir=${userDataDir}`],
-    env: { ...process.env, TICKETSCRIBE_TEST_PROVIDER: 'echo' },
+    env: { ...process.env, CARDONETCAPTURE_TEST_PROVIDER: 'echo' },
   });
 
   const { consoleErrors, cspViolations } = await runFullFlow(app);

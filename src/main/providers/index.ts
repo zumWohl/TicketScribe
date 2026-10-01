@@ -27,7 +27,7 @@ export async function generate(request: GenerateRequest): Promise<string> {
   // Only reachable with the env var set (decision 10) -- never a normal
   // runtime path, and the renderer never has a way to pick 'echo' itself.
   if (request.provider === 'echo') {
-    if (process.env.TICKETSCRIBE_TEST_PROVIDER !== 'echo') {
+    if (process.env.CARDONETCAPTURE_TEST_PROVIDER !== 'echo') {
       throw new Error('echo provider is not enabled.');
     }
     return echo.generate(request.frames, request.activityTimelineText);

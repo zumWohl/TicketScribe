@@ -14,17 +14,17 @@ const api = {
   hasApiKey: (provider: string): Promise<boolean> => ipcRenderer.invoke('keys:has', provider),
 };
 
-export type TicketScribeApi = typeof api;
+export type CardonetCaptureApi = typeof api;
 
 // `nodeIntegration` stays on and `contextIsolation` stays off until the end
 // of Phase 6a, so `process.contextIsolated` is false today and this falls
 // through to the plain-window-property branch. Both branches are kept (and
 // exercised once isolation flips) so this file doesn't need to change then.
 if (process.contextIsolated) {
-  contextBridge.exposeInMainWorld('ticketScribe', api);
+  contextBridge.exposeInMainWorld('cardonetCapture', api);
 } else {
   // Preload's tsconfig has no DOM lib (main-process types only), and `window`
   // and `globalThis` are the same object in a preload script's realm either
   // way, so go through globalThis to avoid needing one just for this line.
-  (globalThis as typeof globalThis & { ticketScribe: TicketScribeApi }).ticketScribe = api;
+  (globalThis as typeof globalThis & { cardonetCapture: CardonetCaptureApi }).cardonetCapture = api;
 }

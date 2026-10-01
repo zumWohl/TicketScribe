@@ -1,7 +1,7 @@
-import type { TicketScribeApi } from './index';
+import type { CardonetCaptureApi } from './index';
 
 declare global {
   interface Window {
-    ticketScribe: TicketScribeApi;
+    cardonetCapture: CardonetCaptureApi;
   }
 }

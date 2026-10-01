@@ -35,5 +35,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $Installer = Get-Item dist/TicketScribe-Setup-*-x64.exe
-          gh release create $env:GITHUB_REF_NAME $Installer.FullName --title "TicketScribe $env:GITHUB_REF_NAME" --generate-notes
+          $Installer = Get-Item dist/CardonetCapture-Setup-*-x64.exe
+          gh release create $env:GITHUB_REF_NAME $Installer.FullName --title "CardonetCapture $env:GITHUB_REF_NAME" --generate-notes

@@ -1,7 +1,7 @@
 // Phase 2 gate: API keys round-trip through the main-process safeStorage-backed
 // store and never land back in the renderer (localStorage or window), and the
 // `generate` IPC channel reaches the echo test provider end-to-end -- only
-// when TICKETSCRIBE_TEST_PROVIDER=echo is set.
+// when CARDONETCAPTURE_TEST_PROVIDER=echo is set.
 import { test, expect, _electron as electron } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
@@ -13,9 +13,9 @@ const TEST_KEY = 'sk-ant-test-phase2-DO-NOT-LEAK-1234567890';
 
 // Every launch gets its own --user-data-dir: this spec writes a real API key
 // to disk (via safeStorage), and must never touch the real app's userData
-// (generic Electron fallback or a packaged TicketScribe profile).
+// (generic Electron fallback or a packaged CardonetCapture profile).
 function tempUserDataDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'ticketscribe-e2e-userdata-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'cardonetcapture-e2e-userdata-'));
 }
 
 test('API key round-trips via safeStorage and never reaches the renderer', async () => {
@@ -24,7 +24,7 @@ test('API key round-trips via safeStorage and never reaches the renderer', async
   let page = await app.firstWindow();
   await page.waitForSelector('body[data-stage="ready"]');
 
-  await page.evaluate(key => window.ticketScribe.setApiKey('claude', key), TEST_KEY);
+  await page.evaluate(key => window.cardonetCapture.setApiKey('claude', key), TEST_KEY);
   await app.close();
 
   // Restart (same profile dir): the key must survive in the on-disk store
@@ -33,7 +33,7 @@ test('API key round-trips via safeStorage and never reaches the renderer', async
   page = await app.firstWindow();
   await page.waitForSelector('body[data-stage="ready"]');
 
-  const hasKey = await page.evaluate(() => window.ticketScribe.hasApiKey('claude'));
+  const hasKey = await page.evaluate(() => window.cardonetCapture.hasApiKey('claude'));
   expect(hasKey).toBe(true);
 
   const haystack = await page.evaluate(() => {
@@ -57,12 +57,12 @@ test('API key round-trips via safeStorage and never reaches the renderer', async
 test('generate() reaches the echo provider end to end, gated by the env var', async () => {
   const app = await electron.launch({
     args: [mainEntry, `--user-data-dir=${tempUserDataDir()}`],
-    env: { ...process.env, TICKETSCRIBE_TEST_PROVIDER: 'echo' },
+    env: { ...process.env, CARDONETCAPTURE_TEST_PROVIDER: 'echo' },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('body[data-stage="ready"]');
 
-  const result = await page.evaluate(() => window.ticketScribe.generate({
+  const result = await page.evaluate(() => window.cardonetCapture.generate({
     provider: 'echo',
     frames: [{ timestamp: Date.now(), dataUrl: 'data:image/jpeg;base64,AAAA', ocrText: '' }],
     activityTimelineText: 'abc',
@@ -79,7 +79,7 @@ test('echo provider is unreachable without the env var', async () => {
   await page.waitForSelector('body[data-stage="ready"]');
 
   const error = await page.evaluate(() =>
-    window.ticketScribe
+    window.cardonetCapture
       .generate({ provider: 'echo', frames: [], activityTimelineText: '', templateContent: '' })
       .then(() => null)
       .catch((e: Error) => e.message),

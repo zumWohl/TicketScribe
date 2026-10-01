@@ -1,5 +1,5 @@
-﻿appId: com.cardonet.ticketscribe
-productName: TicketScribe
+﻿appId: com.cardonet.capture
+productName: CardonetCapture
 asar: false
 files:
   - out/main/**
@@ -10,7 +10,7 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  executableName: TicketScribe
+  executableName: CardonetCapture
 nsis:
   oneClick: true
   perMachine: true

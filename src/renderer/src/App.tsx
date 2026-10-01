@@ -149,7 +149,7 @@ export default function App() {
   }, [ollamaUrl, vlmModel, textModel, threshold, anthropicApiKey, captureWindowEnabled, captureTerminalEnabled, captureBrowserEnabled, transcriptEnabled, clientNames]);
 
   const copyTranscriptSnippet = useCallback(async () => {
-    const snippet = await window.ticketScribe.getTranscriptSnippet();
+    const snippet = await window.cardonetCapture.getTranscriptSnippet();
     await navigator.clipboard.writeText(snippet);
     setTranscriptSnippetCopied(true);
     setTimeout(() => setTranscriptSnippetCopied(false), 1500);
@@ -261,7 +261,7 @@ export default function App() {
 
   const populateWindows = useCallback(async () => {
     try {
-      const sources = await window.ticketScribe.getSources({ types: ['window'] });
+      const sources = await window.cardonetCapture.getSources({ types: ['window'] });
       setWindowSources(sources);
       setWindowSourcesError(sources.length ? null : 'No capturable windows found');
       if (sources.length) setWindowSourceId(prev => (sources.some((s: SourceInfo) => s.id === prev) ? prev : sources[0].id));
@@ -273,7 +273,7 @@ export default function App() {
 
   const populateScreens = useCallback(async () => {
     try {
-      const sources = await window.ticketScribe.getSources({ types: ['screen'] });
+      const sources = await window.cardonetCapture.getSources({ types: ['screen'] });
       if (!sources.length) {
         setScreenSources([]);
         setScreenSourcesError('No displays found');
@@ -306,12 +306,12 @@ export default function App() {
   const resolveSourceId = useCallback(async (): Promise<string> => {
     if (captureSource === 'window') {
       if (windowSourceId) return windowSourceId;
-      const wins = await window.ticketScribe.getSources({ types: ['window'] });
+      const wins = await window.cardonetCapture.getSources({ types: ['window'] });
       if (wins.length) return wins[0].id;
       throw new Error('No capturable window is available. Try "Entire screen" instead.');
     }
     if (screenSourceId) return screenSourceId;
-    const screens = await window.ticketScribe.getSources({ types: ['screen'] });
+    const screens = await window.cardonetCapture.getSources({ types: ['screen'] });
     if (!screens.length) throw new Error('No screen sources found.');
     return screens[0].id;
   }, [captureSource, windowSourceId, screenSourceId]);
@@ -407,7 +407,7 @@ export default function App() {
 
     ensureOCRWorker().catch(() => {});
 
-    window.ticketScribe.eventsStart({
+    window.cardonetCapture.eventsStart({
       window: ls('captureWindow', 'true') === 'true',
       transcript: ls('transcriptEnabled', 'false') === 'true',
     }).catch(() => {});
@@ -772,7 +772,7 @@ export default function App() {
         templateContent: activeTemplateContentForGenerate(),
         ollama: summaryModel === 'ollama' ? { url: ls('ollamaUrl', 'http://localhost:11434'), vlmModel: ls('vlmModel', 'llava'), textModel: ls('textModel', 'llama3') } : undefined,
       };
-      const summary = await window.ticketScribe.generate(request);
+      const summary = await window.cardonetCapture.generate(request);
       procStep(2, 'done');
       procStep(3, 'done');
       setProgress(100, 'Done');
@@ -811,7 +811,7 @@ export default function App() {
 
     let rawEvents: ActivityEvent[] = [];
     try {
-      rawEvents = await window.ticketScribe.eventsStop({
+      rawEvents = await window.cardonetCapture.eventsStop({
         terminal: ls('captureTerminal', 'true') === 'true',
         browserHistory: ls('captureBrowser', 'true') === 'true',
       });
@@ -841,7 +841,7 @@ export default function App() {
       summary,
       '',
     ].join('\n');
-    const result = await window.ticketScribe.saveSummary({ filename, content });
+    const result = await window.cardonetCapture.saveSummary({ filename, content });
     if (!('ok' in result) || !result.ok) {
       setSaveNote({ text: `Save failed: ${(result as { error?: string }).error}`, isError: true });
       return;
@@ -1125,7 +1125,7 @@ export default function App() {
                   <button className="btn btn-soft btn-md coming-soon is-disabled" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>Push to Ticket</button>
                   <button className="btn btn-navy-ghost btn-md" onClick={onSave}>Save to file</button>
                   <button className="btn btn-navy-ghost btn-md" onClick={onCopySummary}>{copiedSummary ? 'Copied!' : 'Copy'}</button>
-                  <button className="btn btn-ghost btn-md" onClick={() => window.ticketScribe.openFolder()}>Open folder</button>
+                  <button className="btn btn-ghost btn-md" onClick={() => window.cardonetCapture.openFolder()}>Open folder</button>
                   <button className="btn btn-ghost btn-md" style={{ marginLeft: 'auto' }} onClick={resetToReady}>New recording</button>
                 </div>
               </section>

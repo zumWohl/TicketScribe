@@ -9,7 +9,7 @@ npm install           # install dependencies (run once after cloning) -- also ve
 npm run rebuild        # rebuild better-sqlite3 for Electron's Node ABI (one-time, needed for browser-history capture)
 npm start              # launch the app (electron-vite dev, hot reload)
 npm run dev            # same, with the Node inspector attached
-npm run dist           # build + package an NSIS installer (dist/TicketScribe-Setup-<version>-x64.exe)
+npm run dist           # build + package an NSIS installer (dist/CardonetCapture-Setup-<version>-x64.exe)
 npm test               # pixel-level check that redaction masking is destructive (mask-verify)
 npm run test:ocr       # OCR sanity check (legacy-style tesseract.js loading path)
 npm run test:ocr:offline   # OCR against the vendored assets, file://, network blocked
@@ -21,10 +21,10 @@ npm run test:e2e       # playwright test (equivalent to `npx playwright test`)
 
 ## Architecture
 
-TicketScribe is an Electron app (TypeScript + React 19 + Tailwind v4 + Vite,
+CardonetCapture is an Electron app (TypeScript + React 19 + Tailwind v4 + Vite,
 via `electron-vite`) with the renderer sandboxed: `contextIsolation: true`,
 `nodeIntegration: false`. All Node/Electron access from the renderer goes
-through a `contextBridge`-exposed `window.ticketScribe` API.
+through a `contextBridge`-exposed `window.cardonetCapture` API.
 
 **Source layout:**
 - `src/main/` — main process. `index.ts` hosts the IPC handlers
@@ -40,7 +40,7 @@ through a `contextBridge`-exposed `window.ticketScribe` API.
   network calls happen here, in the main process**, so API keys and the
   fetch itself never touch the renderer or its CSP.
 - `src/preload/index.ts` — the `contextBridge` bridge
-  (`window.ticketScribe.*`). Typed via `index.d.ts`'s global `Window`
+  (`window.cardonetCapture.*`). Typed via `index.d.ts`'s global `Window`
   augmentation.
 - `src/renderer/src/` — the React app. `App.tsx` is the whole UI in one
   component (ported from the original app.js 1:1 — every screen/stage stays
@@ -67,7 +67,7 @@ through a `contextBridge`-exposed `window.ticketScribe` API.
 
 1. **Capture** (`startCapture`/`captureFrame` in `App.tsx`) — the "Ready"
    stage offers a capture-source choice (Single window vs Entire screen);
-   `resolveSourceId()` calls `window.ticketScribe.getSources({ types })`
+   `resolveSourceId()` calls `window.cardonetCapture.getSources({ types })`
    accordingly, then `navigator.mediaDevices.getUserMedia` with
    `chromeMediaSource: 'desktop'`. The main process's `get-sources` handler
    normalizes each source to `{ id, name, type, thumbnail }` and, for
@@ -107,7 +107,7 @@ through a `contextBridge`-exposed `window.ticketScribe` API.
 
 4. **Summary generation** (`src/main/providers/`) — dispatched by
    `generate()` in `providers/index.ts`, called from `App.tsx`'s
-   `generateSummary()` via `window.ticketScribe.generate(request)`. **All
+   `generateSummary()` via `window.cardonetCapture.generate(request)`. **All
    provider calls (fetch, API keys) live in the main process** — the
    renderer only ever sends non-secret data: masked+downscaled image data
    URLs, scrubbed OCR/timeline text, and model/URL settings (never keys).
@@ -116,10 +116,10 @@ through a `contextBridge`-exposed `window.ticketScribe` API.
    alternative** (`summaryModel` setting) that does both in a single
    Anthropic Messages API call. **A hidden `echo` provider** exists only
    for automated tests, reachable only when the main process starts with
-   `TICKETSCRIBE_TEST_PROVIDER=echo` — the renderer's `summaryModel` state
+   `CARDONETCAPTURE_TEST_PROVIDER=echo` — the renderer's `summaryModel` state
    typing only ever normalizes to `'claude' | 'ollama'`, so there is no way
    to select it from the UI; tests invoke it via
-   `window.ticketScribe.generate({ provider: 'echo', ... })` directly.
+   `window.cardonetCapture.generate({ provider: 'echo', ... })` directly.
    **All providers throw on failure — nothing silently falls back to a raw
    OCR dump presented as a finished summary.** On failure the processing
    stage shows the error and a separately-labeled "Use raw OCR text
@@ -251,7 +251,7 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
 - `events-capture.ts`'s `require('better-sqlite3')` is wrapped in
   `try/catch` — do not remove that guard.
 - Summaries are saved to
-  `%USERPROFILE%\Documents\TicketScribe\ticket-<id>-<timestamp>.txt` (no
+  `%USERPROFILE%\Documents\CardonetCapture\ticket-<id>-<timestamp>.txt` (no
   date/time in the note body or header). Image data still leaves the
   device when Claude is selected. Region masks *are* burned out of the
   sent pixels, so masked regions never reach Anthropic — but any

@@ -6,7 +6,7 @@ import { test, expect, _electron as electron } from '@playwright/test';
 import path from 'path';
 
 const repoRoot = path.resolve(__dirname, '..');
-const exePath = path.join(repoRoot, 'dist', 'win-unpacked', 'TicketScribe.exe');
+const exePath = path.join(repoRoot, 'dist', 'win-unpacked', 'CardonetCapture.exe');
 
 test('packaged --dir exe opens the app', async () => {
   const app = await electron.launch({ executablePath: exePath });

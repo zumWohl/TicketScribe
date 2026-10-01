@@ -20,7 +20,7 @@ function createWindow(): void {
     backgroundColor: '#EDECF0',
     webPreferences: {
       // Phase 6a: the renderer sandbox goes on now that the React port is
-      // complete and uses only window.ticketScribe (contextBridge), never a
+      // complete and uses only window.cardonetCapture (contextBridge), never a
       // direct Node/Electron require().
       nodeIntegration: false,
       contextIsolation: true,
@@ -79,10 +79,10 @@ ipcMain.handle('get-sources', async (_e, opts: { types?: string[] } | undefined)
   });
 });
 
-// Write the confirmed summary text to Documents/TicketScribe/
+// Write the confirmed summary text to Documents/CardonetCapture/
 ipcMain.handle('save-summary', async (_e, { filename, content }: { filename: string; content: string }) => {
   try {
-    const dir = path.join(app.getPath('documents'), 'TicketScribe');
+    const dir = path.join(app.getPath('documents'), 'CardonetCapture');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const filepath = path.join(dir, filename);
     fs.writeFileSync(filepath, content, 'utf8');
@@ -92,9 +92,9 @@ ipcMain.handle('save-summary', async (_e, { filename, content }: { filename: str
   }
 });
 
-// Open the TicketScribe documents folder in Explorer
+// Open the CardonetCapture documents folder in Explorer
 ipcMain.handle('open-folder', async () => {
-  const dir = path.join(app.getPath('documents'), 'TicketScribe');
+  const dir = path.join(app.getPath('documents'), 'CardonetCapture');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   shell.openPath(dir);
 });

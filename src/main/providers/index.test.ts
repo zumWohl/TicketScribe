@@ -23,10 +23,10 @@ vi.mock('electron', () => ({
 const { generate } = await import('./index');
 
 beforeEach(() => {
-  delete process.env.TICKETSCRIBE_TEST_PROVIDER;
+  delete process.env.CARDONETCAPTURE_TEST_PROVIDER;
 });
 afterEach(() => {
-  delete process.env.TICKETSCRIBE_TEST_PROVIDER;
+  delete process.env.CARDONETCAPTURE_TEST_PROVIDER;
 });
 
 describe('generate: image size guard (decision: proves downscale ran)', () => {
@@ -40,7 +40,7 @@ describe('generate: image size guard (decision: proves downscale ran)', () => {
   });
 
   it('allows a frame within the cap', async () => {
-    process.env.TICKETSCRIBE_TEST_PROVIDER = 'echo';
+    process.env.CARDONETCAPTURE_TEST_PROVIDER = 'echo';
     const result = await generate({
       provider: 'echo',
       frames: [{ timestamp: 0, dataUrl: 'data:image/jpeg;size=1280x720,xx', ocrText: '' }],
@@ -52,7 +52,7 @@ describe('generate: image size guard (decision: proves downscale ran)', () => {
 });
 
 describe('generate: echo provider (decision 10)', () => {
-  it('is unreachable without TICKETSCRIBE_TEST_PROVIDER=echo', async () => {
+  it('is unreachable without CARDONETCAPTURE_TEST_PROVIDER=echo', async () => {
     await expect(generate({
       provider: 'echo',
       frames: [],
@@ -62,7 +62,7 @@ describe('generate: echo provider (decision 10)', () => {
   });
 
   it('returns a deterministic summary when enabled', async () => {
-    process.env.TICKETSCRIBE_TEST_PROVIDER = 'echo';
+    process.env.CARDONETCAPTURE_TEST_PROVIDER = 'echo';
     const result = await generate({
       provider: 'echo',
       frames: [

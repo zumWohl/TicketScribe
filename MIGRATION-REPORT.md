@@ -966,6 +966,127 @@ React build). Nothing further to change here for Phase 8.
 
 ## Phase 9 - Rename to CardonetCapture
 
+**Status: COMPLETE**
+
+Renamed every live "ticketscribe"/"TicketScribe"/"TICKETSCRIBE"/"ticketScribe"
+identifier to "cardonetcapture"/"CardonetCapture"/"CARDONETCAPTURE"/"cardonetCapture"
+respectively, across 21 files:
+
+- `package.json` `name` → `cardonetcapture`.
+- `electron-builder.yml`: `appId` → `com.cardonet.capture` (own choice — the
+  plan doesn't dictate an exact string; shorter and consistent with
+  CardonetCapture's own `com.cardonet.*` convention rather than carrying
+  "ticketscribe" forward inside it), `productName` → `CardonetCapture`,
+  `executableName` → `CardonetCapture`. `artifactName` needed no direct edit —
+  it's a `${productName}` template and updates automatically.
+- `.github/workflows/release.yml`: the installer glob and `gh release create
+  --title` both updated to `CardonetCapture`.
+- `src/main/index.ts`: both `Documents/CardonetCapture` IPC-handler call sites
+  (`save-summary`, `open-folder`) and their comments; the `window.ticketScribe`
+  mention in the sandbox comment, updated once the preload rename (below)
+  landed.
+- `src/main/events-capture.ts` (highest-risk file this phase — inline
+  PowerShell/C#, per the plan's "High-risk area #3" warning that breakage here
+  is silent missing-data, not a crash): all 3 `TicketScribeWin32` →
+  `CardonetCaptureWin32` occurrences inside the embedded `Add-Type` C# class
+  and its 3 PowerShell call sites, done via one `replace_all` then a full
+  re-read of the template literal to confirm quoting/escaping stayed intact.
+  Also: `'ticketscribe-transcripts'` tmp folder, the 2
+  `$global:TicketScribeTranscriptStarted` occurrences in the opt-in transcript
+  profile snippet, the "TicketScribe cannot force..." comment, and the
+  `'ticketscribe-history-...'` temp SQLite copy prefix.
+- `src/preload/index.ts` / `index.d.ts`: `TicketScribeApi` type →
+  `CardonetCaptureApi`; `contextBridge.exposeInMainWorld('ticketScribe', ...)`
+  and the dead-code `globalThis` fallback assignment → `'cardonetCapture'`;
+  `Window.ticketScribe` global augmentation → `Window.cardonetCapture`.
+- `src/renderer/src/App.tsx`: all 10 `window.ticketScribe.*` call sites →
+  `window.cardonetCapture.*`.
+- `src/main/providers/{index.ts,echo.ts,index.test.ts}` and
+  `e2e/{phase2-providers,phase6a-full-flow,phase7-packaged-full-flow}.spec.ts`:
+  `TICKETSCRIBE_TEST_PROVIDER` → `CARDONETCAPTURE_TEST_PROVIDER` (env var and
+  comments).
+- `e2e/full-flow-helper.ts`, `e2e/phase6a-full-flow.spec.ts`,
+  `e2e/phase2-providers.spec.ts`: remaining `window.ticketScribe.*` calls and
+  prose comments (`Documents\TicketScribe`, "a packaged TicketScribe
+  profile").
+- `e2e/phase7-packaged-full-flow.spec.ts`, `e2e/packaged-app-smoke.spec.ts`:
+  hardcoded `dist/win-unpacked/TicketScribe.exe` → `CardonetCapture.exe` to
+  match the renamed `executableName`.
+- `e2e/{phase2-providers,phase6a-full-flow,phase7-packaged-full-flow}.spec.ts`:
+  `'ticketscribe-e2e-userdata-'` temp-dir prefix → `'cardonetcapture-e2e-userdata-'`.
+- `src/renderer/src/ocr-verify.ts`: `EXPECTED_TEXT` fixture string
+  `'TICKETSCRIBE VENDORED OCR WORKS'` → `'CARDONETCAPTURE VENDORED OCR WORKS'`
+  (no functional brand significance, just test-fixture text).
+- `test/ocr-verify.html`: `EXPECTED_TEXT` → `'CARDONETCAPTURE OCR VERIFY 12345'`.
+- `README.md`, `CLAUDE.md`: all remaining prose/path/command references.
+
+**Left unchanged (intentional):** the window title string `'Cardonet Capture'`
+(with a space) in `src/main/index.ts` — already correct per the plan, and
+deliberately distinct from the no-space PascalCase technical identifiers
+(productName/executableName/package name), matching the pre-existing legacy
+app's pattern. `MIGRATION.md` and `MIGRATION-REPORT.md` itself are historical
+records and were not touched, consistent with every prior phase.
+
+**Real bug found and fixed as a direct consequence of the rename** (not a
+pre-existing issue): `test/ocr-verify.html`'s `makeTextCanvas()` drew the
+`EXPECTED_TEXT` fixture onto a hardcoded 900×160 canvas. "CARDONETCAPTURE OCR
+VERIFY 12345" (32 chars) is 3 characters longer than the old "TICKETSCRIBE OCR
+VERIFY 12345" (29 chars), and at 48px Arial that extra width pushed the
+trailing "12345" far enough past the canvas edge that it clipped — OCR read
+"CARDONETCAPTURE OCR VERIFY 12" instead, failing the gate
+(`npm run test:ocr`). Root-caused (not worked around): changed
+`makeTextCanvas()` to measure the text's actual rendered width via a scratch
+canvas context (`ctx.measureText`) and size the real canvas to fit it plus a
+fixed margin, so it can never clip regardless of string length again. No
+assertion logic was touched. (`src/renderer/src/ocr-verify.ts`'s equivalent
+harness already sized its canvas to 1400px with a comment recording this
+exact class of bug from Phase 5 — it had enough headroom for the 3-character
+difference and didn't need the fix, but was left as-is rather than
+over-engineered to match.)
+
+Ran `npm install` (not `npm ci`) after all renames specifically to regenerate
+`package-lock.json`'s two `"name": "ticketscribe"` entries to `"cardonetcapture"`
+— confirmed clean afterward (`grep -i ticketscribe package-lock.json` → no
+matches).
+
+### `git grep -i ticketscribe` — final state
+
+Only these remain, all intentional:
+- `MIGRATION.md` — the static plan document (never edited, same as every
+  prior phase).
+- `MIGRATION-REPORT.md` — this living log; historical phase entries above
+  this one reference "TicketScribe" (Gate 0's baseline, Phase 0-8 narrative)
+  and are never retroactively edited, same precedent as always.
+
+Nothing else matched — `package-lock.json` is confirmed clean post-`npm install`.
+
+**Gate:**
+- `npm run typecheck` — **PASS**.
+- `npm test` (mask-verify) — **PASS**.
+- `npm run test:unit` — **PASS** (14/14).
+- `npm run test:ocr` — **PASS** (after the canvas-width fix above).
+- `npm run test:ocr:offline` — **PASS** (after a `npm run build:vite` rebuild;
+  the first run had stale `out/renderer/` output from before the rename).
+- `npm run test:ocr:dev` — **PASS**.
+- `npm run dist` — **PASS**, produced `dist/CardonetCapture-Setup-0.1.0-x64.exe`
+  and `dist/win-unpacked/CardonetCapture.exe`. A stale
+  `dist/TicketScribe-Setup-0.1.0-x64.exe` from a pre-rename build was left
+  over in the gitignored `dist/` directory from an earlier run; deleted it
+  (build output only, not source, not committed).
+- `npx playwright test` — **PASS**, all 9 specs green, including both full
+  pipeline specs (`phase6a-full-flow` against the dev build,
+  `phase7-packaged-full-flow` against the freshly packaged
+  `CardonetCapture.exe`) and `packaged-app-smoke` launching the renamed exe
+  directly.
+- `git grep -i ticketscribe` — only the two intentional references listed
+  above.
+
+**Commit:** `migration: phase 9 - rename to cardonetcapture`
+
+---
+
+## Phase 10 - Azure AI provider
+
 **Status: not started**
 
 ---
