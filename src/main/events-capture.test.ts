@@ -1,16 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import { WINDOW_POLL_SCRIPT } from './events-capture';
 
-const require = createRequire(import.meta.url);
-
+// Phase 8: the legacy-vs-ported byte-identity test is gone along with
+// main/events-capture.js itself. This standalone correctness test (not a
+// differential) stays.
 describe('WINDOW_POLL_SCRIPT', () => {
-  it('is byte-identical between the legacy and ported module', () => {
-    const legacy = require('../../main/events-capture.js');
-    expect(WINDOW_POLL_SCRIPT).toBe(legacy.WINDOW_POLL_SCRIPT);
-  });
-
   it('emits at least one well-formed timestamp|process|title line when spawned', async () => {
     const lines: string[] = [];
     const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOW_POLL_SCRIPT]);

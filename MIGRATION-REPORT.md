@@ -886,7 +886,76 @@ the legacy files this makes fully unreachable, updating docs).
 
 ## Phase 8 - Cutover and cleanup
 
-**Status: not started**
+**Status: COMPLETE**
+
+### What was deleted
+
+- `main.js` (root), `main/events-capture.js`, and the entire `renderer/`
+  directory (`app.js`, `providers.js`, `redact.js`, `scrub-timeline.js`,
+  `index.html`, `styles.css`, `assets/` — all already ported/migrated by
+  earlier phases; `renderer/assets/` specifically was copied into
+  `src/renderer/src/assets/` back in Phase 6a, so nothing was lost).
+- `src/renderer/src/lib/redact.test.ts` and `scrub-timeline.test.ts` — both
+  were entirely legacy-vs-ported differential tests (every case compared
+  output against the now-deleted `renderer/redact.js`/`scrub-timeline.js`);
+  with the legacy side gone, there's nothing left to diff against, so the
+  whole files go, per the plan's explicit instruction. Their standalone
+  correctness coverage is not replaced — recorded here as a real, accepted
+  coverage reduction, not an oversight.
+- The `WINDOW_POLL_SCRIPT` byte-identity case in
+  `src/main/events-capture.test.ts` (same reasoning — legacy module gone).
+  The **other** test in that file (live-spawn correctness check, not a
+  diff against legacy) stays, per "keep every other test."
+- Net: vitest went from 45 passing tests to 14 (13 provider tests +
+  1 events-capture test) — expected and intentional given the above, not a
+  regression to chase.
+
+### `package.json` `main` / packaging
+
+Already pointed at `out/main/index.js` since Phase 7 (a necessary exception
+logged there, since Phase 7's own gate required the packaged app to run the
+React build). Nothing further to change here for Phase 8.
+
+### Docs
+
+- `CLAUDE.md`: full rewrite. New main-process/preload/renderer file layout,
+  the `contextBridge` API, main-process providers + `safeStorage` keys, the
+  `echo` test provider, the tesseract-vendoring explanation (including the
+  dead-CDN-URL finding from Phase 5), the OCR fresh-profile timeout/retry
+  finding from Phase 6a, and the real npm scripts (`npm test`,
+  `typecheck`, `test:unit`, `test:e2e` all now documented — the old "there
+  are no tests or linting scripts configured" line is gone, since it was
+  already wrong before this migration even started per the plan's own
+  Scope Snapshot). Kept a trimmed "Migration status" section noting Phases
+  0 through 8 are done and Phase 9/10 rules still apply.
+- `README.md`: command list updated (`npm run dist`, `typecheck`,
+  `test:unit`, `test:e2e`). Fixed two now-stale claims: OCR language data is
+  bundled at install time, not fetched on first use (Phase 5); API keys are
+  `safeStorage`-encrypted, not stored in `localStorage` (Phase 2).
+
+### Gate results
+
+- `npm run typecheck`, `npm test` (mask-verify), `npm run test:unit`
+  (14/14), `npm run test:ocr` — all **PASS** locally after deletion.
+- `npm run dist` — **PASS**, installer rebuilt cleanly with the legacy
+  files gone (nothing in the build depended on them — `electron-builder.yml`
+  stopped referencing `main.js`/`main/**`/`renderer/**` back in Phase 7).
+- Full Playwright suite (9 specs) against the rebuilt packaged app —
+  **PASS**; `e2e/baseline/` confirmed untouched.
+- `git grep` for the deleted paths (`main.js`, `main/events-capture`,
+  `renderer/{app,providers,redact,scrub-timeline,styles,index}.{js,css,html}`,
+  `renderer/assets`) — only historical comments remain (e.g. "1:1 port of
+  renderer/redact.js", ported-from provenance notes) plus `MIGRATION.md`
+  itself (the static plan document, describing what the plan *does*, not a
+  live code reference). No functional reference (import/require/build
+  config) to any deleted path remains.
+- **Fresh-clone verification** (the gate's actual instruction: clone the
+  committed branch into a temp directory — `npm ci`, not `npm install`, no
+  leftover `out/`/`dist`/vendored-asset/cache artifacts from this session —
+  and run the full gate there): see below, run immediately after this
+  commit.
+
+**Commit:** `migration: phase 8 - cutover and cleanup`
 
 ---
 

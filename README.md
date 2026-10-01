@@ -15,16 +15,20 @@ Hidden regions are removed from the pixels before anything is sent, and nothing 
 ## Install and run
 
 ```bash
-npm install          # install dependencies (run once)
+npm install          # install dependencies (run once) -- also vendors tesseract's OCR assets
 npm run rebuild      # rebuild better-sqlite3 for Electron's ABI (needed for browser-history capture)
-npm start            # launch the app
+npm start            # launch the app (hot reload)
 ```
 
 Other scripts:
 
 ```bash
-npm run dev          # launch with the Node inspector attached (port 9229)
+npm run dev          # launch with the Node inspector attached
+npm run dist         # build + package a Windows installer (dist/*.exe)
 npm test             # pixel-level check that redaction masking is destructive
+npm run typecheck    # TypeScript, no emit
+npm run test:unit    # vitest
+npm run test:e2e     # Playwright end-to-end tests
 ```
 
 `npm run rebuild` is only needed for the optional browser-history activity source. If you skip it, the app still runs and browser capture just does nothing.
@@ -77,6 +81,6 @@ Generated notes are written to `%USERPROFILE%\Documents\TicketScribe\`.
 ## Notes and limitations
 
 - Windows first. The record, redact, and summarize core is portable, but the activity-timeline sources rely on PowerShell and Win32.
-- OCR language data (`eng.traineddata`) is fetched on first use, so the first recording after install needs network access for that download.
-- API key storage currently uses `localStorage`, in the app's user-data directory, outside the project and git. Treat the machine as trusted accordingly.
+- OCR language data (`eng.traineddata`) is bundled at install time (`npm install`'s postinstall step), so recording works offline from the first run.
+- API keys are encrypted at rest (Electron's `safeStorage`, backed by Windows DPAPI) in the app's user-data directory, never in `localStorage`.
 - Commands run inside an RDP or remote session are not captured individually. Only that the remote-session window was focused, and for how long, is recorded.
