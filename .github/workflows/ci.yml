@@ -40,7 +40,7 @@ jobs:
       - name: Package (--dir, unpacked)
         run: npx electron-builder --dir
 
-      - name: Playwright e2e (legacy baseline + ported main + packaged smoke)
+      - name: Playwright e2e (legacy baseline + packaged smoke + React renderer: smoke/visual-diff/full pipeline + provider IPC)
         run: npx playwright test
 
       - name: Upload --dir build output

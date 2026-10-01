@@ -1,7 +1,9 @@
-// Phase 1 gate: the ported TypeScript main process (out/main/index.js),
-// still loading the legacy renderer, (a) still returns real capture sources
-// over the get-sources IPC channel, and (b) still renders pixel-identical to
-// the Gate 0 baseline screenshots (renderer didn't change in this phase).
+// Phase 6a gate: the React renderer (styled with the unchanged legacy
+// styles.css) renders pixel-equivalent to the Gate 0 baseline screenshots
+// for every deterministic stage/screen (ready x2 source choices, templates,
+// settings, ready-again). Countdown/recording/review aren't compared here
+// for the same reason Phase 1 excluded them: a live timer and video frames
+// are non-deterministic frame-to-frame even with zero visual regression.
 import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
@@ -9,28 +11,18 @@ import { comparePng, VISUAL_DIFF_THRESHOLD, VISUAL_DIFF_THRESHOLD_RESAMPLED } fr
 
 const repoRoot = path.resolve(__dirname, '..');
 const baselineDir = path.join(__dirname, 'baseline');
-const actualDir = path.join(__dirname, 'phase1-actual');
+const actualDir = path.join(__dirname, 'phase6a-actual');
+const mainEntry = path.join(repoRoot, 'out/main/index.js');
 
-test('ported TS main process: get-sources works and renderer is visually unchanged', async () => {
+test('React renderer is visually equivalent to the Gate 0 baseline', async () => {
   fs.mkdirSync(actualDir, { recursive: true });
 
-  const app = await electron.launch({ args: [path.join(repoRoot, 'out/main/index.js')] });
+  const app = await electron.launch({ args: [mainEntry] });
   const page: Page = await app.firstWindow();
   page.on('dialog', d => { d.dismiss().catch(() => {}); });
   await page.waitForLoadState('domcontentloaded');
   await page.waitForSelector('body[data-stage="ready"]');
 
-  // (a) get-sources over IPC, called directly via the legacy renderer's
-  // nodeIntegration:true require('electron') -- same path the UI itself uses.
-  const sources = await page.evaluate(async () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { ipcRenderer } = require('electron');
-    return ipcRenderer.invoke('get-sources', { types: ['window'] });
-  });
-  expect(Array.isArray(sources)).toBe(true);
-  expect(sources.length).toBeGreaterThan(0);
-
-  // (b) visual parity against the Gate 0 baseline for every reachable stage.
   async function shotAndCompare(name: string) {
     const actualPath = path.join(actualDir, `${name}.png`);
     await page.screenshot({ path: actualPath });
@@ -45,22 +37,22 @@ test('ported TS main process: get-sources works and renderer is visually unchang
 
   await shotAndCompare('01-ready-window-source');
 
-  await page.click('#src-screen');
+  await page.click('.source-tile:has-text("Entire screen")');
   await page.waitForTimeout(300);
   await shotAndCompare('02-ready-screen-source');
 
-  await page.click('#src-window');
+  await page.click('.source-tile:has-text("Single window")');
   await page.waitForTimeout(200);
 
-  await page.click('#nav-templates');
+  await page.click('.nav-item:has-text("Summary Templates")');
   await page.waitForTimeout(200);
   await shotAndCompare('03-templates');
 
-  await page.click('#nav-settings');
+  await page.click('.nav-item:has-text("Settings")');
   await page.waitForTimeout(200);
   await shotAndCompare('04-settings');
 
-  await page.click('#nav-work');
+  await page.click('.nav-item:has-text("New Recording")');
   await page.waitForTimeout(200);
   await shotAndCompare('05-ready-again');
 

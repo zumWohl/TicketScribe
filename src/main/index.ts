@@ -19,16 +19,25 @@ function createWindow(): void {
     title: 'Cardonet Capture',
     backgroundColor: '#EDECF0',
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      // Phase 6a: the renderer sandbox goes on now that the React port is
+      // complete and uses only window.ticketScribe (contextBridge), never a
+      // direct Node/Electron require().
+      nodeIntegration: false,
+      contextIsolation: true,
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
     },
   });
 
   mainWindow.setMenuBarVisibility(false);
-  // Phase 1: main process is ported to TypeScript, renderer stays the legacy
-  // (pre-React) HTML/JS until Phase 6a. out/main/ -> repo root is two levels up.
-  mainWindow.loadFile(path.join(__dirname, '..', '..', 'renderer', 'index.html'));
+  // Phase 6a: the React renderer takes over from the legacy HTML/JS. Dev
+  // mode loads electron-vite's dev server (hot reload); a built app loads
+  // the compiled out/renderer/index.html directly (out/main/ -> out/renderer/
+  // is one level up, then down into renderer/).
+  if (process.env.ELECTRON_RENDERER_URL) {
+    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  }
 }
 
 // Return capture sources so the renderer can pick one for getUserMedia.
