@@ -699,7 +699,92 @@ needed no changes — it only ever used `window.ticketScribe` and the
 
 ## Phase 6b - Tailwind v4 conversion
 
-**Status: not started**
+**Status: COMPLETE**
+
+### Deviation from the plan's literal wording (user-approved)
+
+MIGRATION.md's Phase 6b text says "convert component by component; remove
+styles.css only when nothing uses it", implying every className in
+`App.tsx` eventually becomes atomic Tailwind utilities and `styles.css`
+disappears entirely. Before starting, I surfaced the tradeoff to the user:
+that literal approach touches ~900 lines of JSX including the recording/
+review/processing/sent stages, which have **zero automated visual-diff
+coverage** (only ready/templates/settings are in the Gate 0 baseline), so
+any mistake there would ship undetected. The user chose the alternative I
+proposed: a **hybrid conversion** — a full Tailwind v4 `@theme` block holds
+every design token (the Cardonet palette, fonts, radii, shadows), and every
+rule in `styles.css` is rewritten using Tailwind's `@apply` directive
+against those tokens, but **JSX classNames in `App.tsx` are untouched**
+(`className="btn btn-pink"` still works, now backed by `@apply`-authored
+Tailwind CSS instead of hand-rolled custom-property CSS). This is genuinely
+Tailwind-powered (real utility classes generated from the theme, real
+`@apply` compilation — a build error would occur if any `@apply` referenced
+an unknown utility, and the build was clean) while carrying far less
+regression risk, since no markup in the four visually-unverified stages was
+touched at all. `styles.css` therefore stays non-empty under this approach;
+it is the home of the theme + the `@apply` component layer, not something
+Phase 6b removes.
+
+### What changed
+
+- `src/renderer/src/styles.css`: `@import "tailwindcss"` at the top, then
+  `@theme { ... }` with every token from the old `:root` block (colors,
+  radii, shadows, fonts), then `@layer base` (resets, scrollbar) and
+  `@layer components` (every component rule from the original file,
+  rewritten with `@apply`). Font-face declarations, keyframe animations, the
+  `[data-tip]` tooltip pseudo-elements, and the per-provider `--accent`
+  custom-property pattern stay as plain CSS inside/alongside the layers —
+  Tailwind doesn't replace `@font-face`/`@keyframes`/pseudo-elements in any
+  project, hybrid or atomic.
+- `src/renderer/src/index.css` deleted; `main.tsx` no longer imports it —
+  `styles.css` is now the single stylesheet entry point (imported by
+  `App.tsx`, unchanged from Phase 6a).
+- `--gradient-cn` (the 10-stop brand gradient) is defined inside `@theme`
+  even though "gradient" isn't a Tailwind-recognized token namespace (no
+  utility is generated for it) — `@theme` still emits every key as a real
+  CSS custom property regardless, which is all a multi-stop gradient needs
+  for the two plain-CSS consumers (`.tb-gradient`, `.progressbar .fill`).
+
+### Real infrastructure bug found and fixed (not a Tailwind issue)
+
+Chasing what looked like visual-diff flakiness (a 2.95% diff, then later a
+reproducible 6.40% diff, against an otherwise byte-identical comparison)
+led to the actual cause: `legacy-baseline.spec.ts` was still part of the
+default `npx playwright test` sweep, and it **unconditionally regenerates**
+`e2e/baseline/*.png` every time it runs (documented as a known hazard since
+Phase 0, with the workaround being "`git checkout` it back afterward"). When
+run as part of the **same** suite invocation as a later visual-diff spec,
+the later spec was comparing against a baseline the earlier spec had just
+overwritten moments before — at whatever display scale happened to be
+active right then — not the real, frozen Gate 0 reference. The post-hoc
+`git checkout` restored the git-tracked state between separate invocations,
+but couldn't protect a comparison that happened to run later **within the
+same invocation**. Fixed properly this time instead of papering over it
+again: `playwright.config.ts` now has `testIgnore: ['**/legacy-baseline.spec.ts']`
+— it already served its one-time Gate 0 purpose and must never run as part
+of routine suites again; `ci.yml`'s comment updated accordingly. With that
+fixed, `VISUAL_DIFF_THRESHOLD` was reverted from the 5% it had been
+(mistakenly) widened to, back to the original 2% — and the full suite
+passes cleanly at that tighter threshold.
+
+### Gate results
+
+- `npm run build:vite` — **PASS**, zero `@apply` compile errors (Tailwind
+  fails the build if `@apply` references an unrecognized utility, so this
+  confirms every token/utility reference resolved).
+- `npm run typecheck` — **PASS**.
+- `npm test` (mask-verify) — **PASS**.
+- `npm run test:unit` — **PASS**, 45/45.
+- `e2e/phase6a-visual-diff.spec.ts` — **PASS** against the **original,
+  un-regenerated** Gate 0 baseline, at the reverted 2% threshold.
+- `e2e/phase6a-full-flow.spec.ts`, `phase6a-react-smoke.spec.ts` — **PASS**,
+  unaffected (no JSX changed).
+- Full Playwright suite (`npx playwright test`, now 7 specs with
+  `legacy-baseline` correctly excluded) — **PASS**, `e2e/baseline/`
+  confirmed untouched (`git status --porcelain e2e/baseline` empty) after
+  the run — no post-hoc restore needed anymore.
+
+**Commit:** `migration: phase 6b - tailwind v4 conversion`
 
 ---
 
