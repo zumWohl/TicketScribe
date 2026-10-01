@@ -12,8 +12,10 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
+    "@playwright/test": "^1.63.0",
     "electron": "^42.5.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "playwright": "^1.63.0"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
