@@ -333,7 +333,46 @@ test's stated scope; real pixel-level verification stays mask-verify's job.
 
 ## Phase 4 - Test harnesses on the new source
 
-**Status: not started**
+**Status: COMPLETE**
+
+Added `esbuild` as a devDependency (was already present transitively via
+Vite; added explicitly since scripts now invoke it directly) and a new
+`build:redact-cjs` script: `esbuild src/renderer/src/lib/redact.ts --bundle
+--platform=node --format=cjs --outfile=test/.build/redact.cjs`. Wired as a
+`pretest` npm lifecycle script, so plain `npm test` always rebuilds it first.
+`test/mask-verify.html`'s `require()` now points at `./.build/redact.cjs`
+instead of `../renderer/redact.js` — the harness code shape is unchanged,
+only the required path. Per the gate's "confirm the harness actually loads
+the new build" instruction, the result payload now includes
+`resolvedModulePath` (`require.resolve(...)`), and `run-mask-verify.js`
+fails the run (exit 3) if that path doesn't actually point into
+`test/.build/redact.cjs` — so a stale build or a reverted require() can't
+silently pass by exercising the wrong module. All 5 original assertions
+(`secretLeaked` false, `maskFillPresent` true, `greenSurvives` true,
+below-cap/above-cap downscale sizes) are unchanged.
+
+New OCR harness: `test/ocr-verify.html` + `test/run-ocr-verify.js` (`npm run
+test:ocr`), mirroring `run-mask-verify.js`'s hidden-`BrowserWindow` pattern.
+Renders a known string (`TICKETSCRIBE OCR VERIFY 12345`) on a canvas with a
+standard font, runs it through the **current legacy-path** tesseract.js
+loading (forced browser build + `require.resolve`-derived worker/core
+paths, exactly as `app.js` does today — Phase 5 changes how those paths are
+derived, not this harness), and fails if `words` comes back empty or the
+expected text (alphanumeric-normalized, since OCR of a clean render is
+near-exact but not demanded byte-perfect) isn't found. Confirms this
+environment has working network access to tesseract's CDN-hosted
+`eng.traineddata` (the legacy runtime-download path) — recognized the test
+string correctly first try, 4 words, no retries needed.
+
+### Gate results
+
+- `npm test` (mask-verify, now against `redact.ts` via the compiled build) —
+  **PASS**, confirmed via `resolvedModulePath` pointing into
+  `test/.build/redact.cjs`.
+- `npm run test:ocr` — **PASS** (`wordCount: 4`, `foundExpectedText: true`).
+- Added both to `ci.yml`.
+
+**Commit:** `migration: phase 4 - test harnesses on the new source`
 
 ---
 

@@ -16,6 +16,14 @@ function finish(code, payload) {
 }
 
 ipcMain.on('mask-verify-result', (_e, payload) => {
+  // Phase 4: fail loudly if this run somehow didn't load the ported build
+  // (e.g. build:redact-cjs didn't run / produced a stale file) -- a missing
+  // or wrong-path require() would otherwise silently test the wrong module.
+  const resolvedPath = payload && payload.resolvedModulePath;
+  if (!resolvedPath || !resolvedPath.includes(path.join('.build', 'redact.cjs'))) {
+    finish(3, { pass: false, error: `expected the ported .build/redact.cjs, got: ${resolvedPath}` });
+    return;
+  }
   finish(payload && payload.pass ? 0 : 1, payload);
 });
 
