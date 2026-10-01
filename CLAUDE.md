@@ -63,3 +63,23 @@ TicketScribe is an Electron app with a strict two-process split enforced by Elec
 - Commands run *inside* an RDP or other remote session are invisible to local capture; only that the remote-session window was focused (and for how long) is visible, via the window-activity source.
 - `main/events-capture.js`'s `require('better-sqlite3')` is wrapped in `try/catch` — do not remove that guard, since the module needs a one-time `npm run rebuild` that not every environment will have run.
 - Summaries are saved to `%USERPROFILE%\Documents\TicketScribe\ticket-<id>-<timestamp>.txt` (no date/time in the note body or header, per the summary spec). Image data still leaves the device when Claude is selected as the summary model. Region masks *are* burned out of the sent pixels (destructive `fillRect` before downscale), so masked regions never reach Anthropic — but text scrubbing only touches text, and any **unmasked** pixels in a frame still leave the device with a Claude call. If a credential is visible on screen, mask it in the review stage (or use Ollama, whose exposure stays local).
+
+## Migration rules (TS + React + Tailwind + Vite)
+
+- MIGRATION.md is the plan. It runs in one autonomous pass, Phase 0 to Phase 10.
+  Read MIGRATION-REPORT.md first; resume from the first phase not marked complete.
+- Every phase ends with its automated Gate. Commit only when the gate passes, one
+  commit per phase: `migration: phase N - <title>`.
+- Never make a gate pass by weakening a test: no editing, skipping or deleting
+  assertions, thresholds or screenshot baselines, no `.skip`, no `|| true`.
+- Redaction is safety-critical. Masks stay destructive and are applied to the
+  full-resolution frame before downscaling. `npm test` (mask-verify) must pass at
+  every gate.
+- Through Phase 8, do not change: appId, productName, executableName, artifactName,
+  the Documents\TicketScribe path, localStorage key names, package.json `name`.
+- Do not upgrade electron, better-sqlite3 or tesseract.js. Do not run
+  `npm audit fix --force`.
+- Never `git push`, `git tag`, or merge into main.
+- If a gate fails after 3 genuine attempts, or passing would break a rule here,
+  stop: commit WIP, write the reason in MIGRATION-REPORT.md, and end the run.
+- Keep MIGRATION-REPORT.md updated after every phase, not only at the end.
