@@ -16,7 +16,7 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^12.11.1",
     "tesseract.js": "^5.1.1"
   }
 }
