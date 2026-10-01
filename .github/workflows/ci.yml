@@ -19,7 +19,7 @@ jobs:
       - name: Mask-verify (destructive redaction test, against ported redact.ts)
         run: npm test
 
-      - name: OCR verify
+      - name: OCR verify (legacy loading path)
         run: npm run test:ocr
 
       - name: Typecheck
@@ -30,6 +30,12 @@ jobs:
 
       - name: Build renderer/main/preload (Vite)
         run: npm run build:vite
+
+      - name: OCR verify (vendored assets, packaged/offline)
+        run: npm run test:ocr:offline
+
+      - name: OCR verify (vendored assets, Vite dev server)
+        run: npm run test:ocr:dev
 
       - name: Package (--dir, unpacked)
         run: npx electron-builder --dir

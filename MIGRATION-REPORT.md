@@ -378,7 +378,8 @@ string correctly first try, 4 words, no retries needed.
 
 ## Phase 5 - Tesseract asset resolution
 
-**Status: STOPPED (WIP committed) — see "Stop reason" below.**
+**Status: COMPLETE** (resumed after an initial stop — see "Initial stop and
+resolution" below).
 
 ### What was built
 
@@ -449,78 +450,110 @@ string correctly first try, 4 words, no retries needed.
     `electron.vite.config.ts`'s renderer block (a faithful stand-in for
     `electron-vite dev`'s own renderer dev server, which is just Vite
     underneath with no custom static-serving layer) and loads
-    `ocr-verify.html` from it via `http://localhost:PORT`. **FAILS** — see
-    below.
+    `ocr-verify.html` from it via `http://localhost:PORT`. **PASSES**
+    (after the investigation below), zero CSP violations, zero console
+    errors.
 
-### Stop reason: `test:ocr:dev` fails after 5 genuine fix attempts
+### Initial stop and resolution
 
 Phase 5's gate requires `test:ocr` to pass under **both** `electron-vite dev`
-and a packaged/offline build. The offline leg passes cleanly; the dev-server
-leg does not, and MIGRATION.md's stop condition ("a gate still fails after 3
-genuine fix attempts") is met — 5 distinct attempts were made:
+and a packaged/offline build. The offline leg passed cleanly on the first
+try; the dev-server leg initially failed consistently, and the run was
+**stopped** per MIGRATION.md's rule ("a gate still fails after 3 genuine fix
+attempts") after 5 distinct attempts found no fix:
 
 1. **CSP `connect-src: data:` fix** (described above) — necessary, fixed a
-   real violation, but didn't resolve the dev-server failure.
+   real violation, but didn't resolve the dev-server failure on its own.
 2. **Bypassed SIMD feature-detection** by pointing `corePath` at the exact
-   `tesseract-core.wasm.js` file instead of a directory (ruling out
-   `wasm-feature-detect`'s `simd()` check as the cause) — no change.
+   `tesseract-core.wasm.js` file instead of a directory — no change.
 3. **Inspected the raw HTTP response** for `eng.traineddata` from the dev
-   server directly (`Invoke-WebRequest`): `Status 200`, correct byte count
-   (10,923,060), correct gzip magic bytes (`1F 8B`) — the file genuinely
-   arrives intact. One anomaly noted: `Content-Type:` is empty (Vite's
-   static-file MIME guesser doesn't recognize `.traineddata`), but this
-   shouldn't affect `fetch().arrayBuffer()`, which doesn't depend on
-   Content-Type.
-4. **Added `window.onerror`/`unhandledrejection` handlers and a 20s internal
-   safety timeout** to `ocr-verify.ts` to turn what was an indefinite hang
-   into a diagnosable result. This surfaced the real error: `Uncaught Error:
-   initialization failed`, thrown from inside tesseract.js's bundled code
-   (`node_modules/.vite/deps/tesseract__js.js`), with console warnings
-   `Error opening data file ./eng.traineddata` / `Tesseract couldn't load
-   any languages!` — these are native Tesseract-engine messages that occur
-   when the WASM virtual filesystem never received a valid traineddata
-   write, i.e. the JS-layer load succeeded enough to report progress but the
-   native init still can't find usable data.
+   server directly (`Invoke-WebRequest`): correct status/bytes/magic — the
+   file genuinely arrived intact. (One red herring noted here: an empty
+   `Content-Type` header, which doesn't actually affect `fetch()`.)
+4. **Added `window.onerror`/`unhandledrejection` handlers and a safety
+   timeout** to get a real error instead of an indefinite hang: `Uncaught
+   Error: initialization failed`, with native-engine console warnings
+   (`Error opening data file ./eng.traineddata`, `Tesseract couldn't load
+   any languages!`) implying the WASM virtual filesystem never received
+   usable data, despite the JS-layer load reporting 100% progress.
 5. **Disabled tesseract.js's IndexedDB cache** (`cacheMethod: 'none'`) to
-   rule out a stale/bad cache entry from an earlier failed attempt at the
-   same `http://localhost:5173` origin shadowing a fresh fetch — identical
-   failure, ruling this out too.
+   rule out a stale cache entry — identical failure.
 
-The same vendored files, same `createWorker` options shape, and same
-known-string check all work correctly when loaded via `file://` (offline
-leg). Something about tesseract.js's native data-loading path specifically
-fails under the Vite dev server's `http://localhost` origin, and the precise
-root cause is not yet identified. This is isolated to `npm run dev:vite`
-(developer hot-reload convenience) — it does not affect the packaged/shipped
-app, and does not touch redaction/masking (verified separately, still
-passing).
+After the user asked to resume and keep investigating, two more targeted
+attempts were made:
 
-### What a human needs to decide
+6. **Enabled tesseract's verbose `logger`** (instead of a no-op) to see the
+   exact job/progress sequence: `loading tesseract core` → `initializing
+   tesseract` → `loading language traineddata` (0 → 0.5 → 1, i.e. reported
+   as fully successful) → `initializing api`, at which point the native
+   warnings and the uncaught error fired. This placed the failure precisely
+   at the native `TessBaseAPI::Init()` call, not at any JS-level fetch.
+7. **Pre-fetched `eng.traineddata` on the main thread** and passed it
+   directly to `createWorker` as `{ code: 'eng', data }` — bypassing
+   tesseract.js's own internal fetch/cache path for language data entirely.
+   **Identical failure** — this ruled out the fetch/cache path as the cause
+   altogether, narrowing it to core/WASM module state itself.
 
-- Whether OCR working under `npm run dev:vite` is actually required before
-  resuming, or whether Phase 5's gate can be relaxed to the packaged/offline
-  leg only (with dev-mode OCR tracked as a known follow-up, since the
-  production path is fully verified).
-- If dev-mode OCR must work: further investigation should start from the
-  `Uncaught Error: initialization failed` / `node_modules/.vite/deps/
-  tesseract__js.js` stack and tesseract.js's `worker-script/index.js`
-  `loadAndGunzipFile` path, comparing exact byte-for-byte behavior between
-  the two origins (e.g. instrument `adapter.gunzip`'s input/output lengths,
-  or test whether Vite's dependency pre-bundling of `tesseract.js` itself
-  — note the `.vite/deps/tesseract__js.js` path, meaning Vite is
-  pre-bundling the package rather than leaving it untouched — somehow
-  alters the worker-spawning code path versus a production build, where no
-  such pre-bundling occurs).
+At this point, while re-running to gather more detail, the test started
+**passing reliably** (3 consecutive clean runs) with no further source
+changes beyond reverting the attempt-7 prefetch back to the plain
+`createWorker('eng', 1, {...})` call and deleting the stale
+`node_modules/.vite` dependency-pre-bundling cache. The working theory: an
+earlier backgrounded `test:ocr:dev` run that had to be force-stopped
+(`TaskStop`) during iteration left an orphaned Vite dev-server process
+and/or a dependency-pre-bundle cache generated under a transiently-different
+config (one attempt temporarily added `optimizeDeps.exclude: ['tesseract.js']`,
+which was reverted after it broke module resolution a different way — see
+below) — either of which could plausibly corrupt or shadow the **next**
+run's state on the same default port (5173) and cache directory. Clearing
+`node_modules/.vite` and fixing the harness to destroy its `BrowserWindow`
+*before* awaiting `server.close()` (a related hygiene bug: an open HMR
+websocket was keeping `server.close()` pending indefinitely, which had been
+silently producing a 75MB+ log of endless "server connection lost. Polling
+for restart..." reconnect attempts on at least one run instead of exiting)
+eliminated whatever stale state was interfering. Re-ran the full Phase 5
+gate (typecheck, build, mask-verify, legacy OCR, offline OCR, dev-server
+OCR, unit tests) end to end afterward with everything green.
 
-### Files touched this phase (uncommitted as WIP)
+**Dead end noted for the record:** `optimizeDeps.exclude: ['tesseract.js']`
+(tried between attempts 5 and 6, to test whether Vite's esbuild dependency
+pre-bundling was itself the problem) made things *worse* in a different way
+— `Uncaught SyntaxError: ... does not provide an export named 'createWorker'`
+— because tesseract.js's `main` entry is CommonJS, and Vite's pre-bundling
+step is what normally performs the CJS→ESM named-export interop for it;
+excluding it from pre-bundling broke that interop instead. This was reverted
+immediately. If this surfaces again, it is **not** the fix.
+
+**Net assessment:** this was very likely process/cache hygiene from rapid
+iterative manual testing (my own debugging loop), not a fundamental
+incompatibility between tesseract.js and Vite's dev server. A fresh
+`npm run test:ocr:dev` on a clean checkout should not hit this; if it
+recurs, the fix is `rm -rf node_modules/.vite` before retrying.
+
+### Files touched this phase
 
 `.gitignore`, `electron.vite.config.ts`, `package.json`,
 `src/renderer/index.html` (CSP fix), `scripts/vendor-tesseract.js` (new),
 `src/renderer/ocr-verify.html` (new), `src/renderer/src/ocr-verify.ts` (new),
-`test/run-ocr-verify-dev-server.js` (new, failing),
-`test/run-ocr-verify-vendored.js` (new, passing).
+`test/run-ocr-verify-dev-server.js` (new), `test/run-ocr-verify-vendored.js`
+(new), `.github/workflows/ci.yml` (added the two new OCR gates, reordered so
+`build:vite` runs before them).
 
-**Commit:** `migration: phase 5 - WIP (stopped)`
+### Gate results (final)
+
+- `npm run typecheck` — **PASS**.
+- `npm run build:vite` — **PASS**, `ocrVerify` entry produced alongside
+  `index`.
+- `npm test` (mask-verify) — **PASS**.
+- `npm run test:ocr` (legacy loading path, Phase 4's harness) — **PASS**,
+  unaffected by this phase's changes.
+- `npm run test:ocr:offline` (vendored assets, `file://`, network blocked)
+  — **PASS**, zero CSP violations, zero console errors.
+- `npm run test:ocr:dev` (vendored assets, Vite dev server) — **PASS** (3
+  consecutive clean runs), zero CSP violations, zero console errors.
+- `npm run test:unit` — **PASS**, 45/45, unaffected.
+
+**Commit:** `migration: phase 5 - tesseract asset resolution`
 
 ---
 
@@ -579,8 +612,3 @@ passing).
       "good").
 - [ ] **ImmyBot** scripts and detection updated for the Phase 9 names before
       the first renamed release.
-- [ ] **Phase 5 follow-up:** decide whether OCR must work under `npm run
-      dev:vite` (see Phase 5's "Stop reason" above) — the packaged/offline
-      path is fully verified; only the Vite-dev-server hot-reload path has
-      an unresolved `Uncaught Error: initialization failed` from
-      tesseract.js's bundled worker code.

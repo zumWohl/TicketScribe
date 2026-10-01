@@ -15,11 +15,17 @@ app.disableHardwareAcceleration();
 
 let done = false;
 let server = null;
+let win = null;
 async function finish(code, payload) {
   if (done) return;
   done = true;
   if (payload) console.log(JSON.stringify(payload, null, 2));
   console.log(code === 0 ? '\nOCR VERIFY (vendored, dev server): PASS' : '\nOCR VERIFY (vendored, dev server): FAIL');
+  // Destroy the window FIRST: an open HMR websocket back to the dev server
+  // otherwise keeps server.close() pending indefinitely, which previously
+  // left this process alive printing "server connection lost. Polling for
+  // restart..." in an endless loop instead of exiting.
+  if (win && !win.isDestroyed()) win.destroy();
   if (server) await server.close().catch(() => {});
   app.exit(code);
 }
@@ -35,7 +41,7 @@ app.whenReady().then(async () => {
   await server.listen();
   const port = server.httpServer.address().port;
 
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     show: false,
     width: 400, height: 300,
     webPreferences: { nodeIntegration: false, contextIsolation: true, offscreen: false },
