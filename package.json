@@ -11,7 +11,13 @@
     "test": "electron test/run-mask-verify.js",
     "build:redact-cjs": "esbuild src/renderer/src/lib/redact.ts --bundle --platform=node --format=cjs --outfile=test/.build/redact.cjs",
     "test:ocr": "electron test/run-ocr-verify.js",
+    "test:ocr:offline": "electron test/run-ocr-verify-vendored.js --proxy-server=127.0.0.1:9",
+    "test:ocr:dev": "electron test/run-ocr-verify-dev-server.js",
     "dist": "electron-builder --win nsis --x64 --publish never",
+    "postinstall": "node scripts/vendor-tesseract.js",
+    "vendor:tesseract": "node scripts/vendor-tesseract.js",
+    "prebuild:vite": "npm run vendor:tesseract",
+    "predev:vite": "npm run vendor:tesseract",
     "dev:vite": "electron-vite dev",
     "build:vite": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
@@ -37,6 +43,7 @@
     "playwright": "^1.63.0",
     "pngjs": "^7.0.0",
     "tailwindcss": "^4.3.3",
+    "tesseract.js": "^5.1.1",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
     "vitest": "^5.0.3"
@@ -44,7 +51,6 @@
   "dependencies": {
     "better-sqlite3": "^12.11.1",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "tesseract.js": "^5.1.1"
+    "react-dom": "^19.3.0"
   }
 }

@@ -378,7 +378,149 @@ string correctly first try, 4 words, no retries needed.
 
 ## Phase 5 - Tesseract asset resolution
 
-**Status: not started**
+**Status: STOPPED (WIP committed) — see "Stop reason" below.**
+
+### What was built
+
+- `scripts/vendor-tesseract.js` (new `postinstall` + `vendor:tesseract` +
+  `prebuild:vite`/`predev:vite` npm scripts): copies
+  `tesseract.js/dist/worker.min.js` and every `tesseract-core*.{js,wasm}`
+  variant from `tesseract.js-core` into
+  `src/renderer/public/vendor/tesseract/` (gitignored output), and downloads
+  `eng.traineddata` once, caching it locally thereafter.
+- **Finding, fixed:** the URL tesseract.js's own code builds by default when
+  no `langPath` is given —
+  `https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng/4.0.0/eng.traineddata`
+  (no `.gz`, no explicit package version) — is a **genuine 404**, confirmed
+  directly. `@tesseract.js-data/eng`'s actual published npm/jsdelivr version
+  is `1.0.0`; `4.0.0` is a subdirectory inside it (the traineddata format
+  version), and only a gzip-compressed `eng.traineddata.gz` exists at
+  `@tesseract.js-data/eng@1.0.0/4.0.0/eng.traineddata.gz`. This means **the
+  legacy app's OCR auto-redaction has likely never worked on a genuinely
+  fresh machine/profile** — Gate 0's and Phase 4's successful OCR runs in
+  this environment were almost certainly served from a stale IndexedDB cache
+  left by an earlier session, not a live fetch, since the live URL doesn't
+  resolve. This is a pre-existing legacy-app defect, out of scope to fix
+  under the legacy-code freeze; Phase 5's vendoring approach is the actual
+  fix going forward. `vendor-tesseract.js` downloads the correct `.gz` URL
+  and saves it locally as plain `eng.traineddata` (no `.gz` extension) —
+  tesseract.js's loader only appends `.gz` to the fetch URL when an explicit
+  `gzip: true` option is passed (not done here, matching the legacy call
+  site), but it auto-detects and gunzips based on the file's magic bytes
+  regardless of filename, so this works correctly either way.
+- `electron.vite.config.ts`: added a second renderer entry, `ocrVerify`
+  (`src/renderer/ocr-verify.html` / `src/renderer/src/ocr-verify.ts`) — a
+  standalone page (no React, no Node APIs) that builds `workerPath`/
+  `corePath`/`langPath` via `new URL('vendor/tesseract/...', document.baseURI)`
+  (never root-absolute) and runs the same known-string OCR check as Phase
+  4's harness, reporting via `window.__ocrVerifyDone`/`__ocrVerifyPayload`
+  instead of `ipcRenderer` (this page doesn't need Node integration, matching
+  where the renderer ends up after Phase 6a's isolation flip).
+- `tesseract.js` moved to `devDependencies` (its browser `createWorker` API
+  is now consumed at Vite **build** time via `import { createWorker } from
+  'tesseract.js'`, which Vite's default `browser` field resolution handles
+  correctly — unlike the legacy renderer's manual
+  `require('tesseract.js/dist/tesseract.min.js')` workaround, which exists
+  precisely because raw `require()` under `nodeIntegration` doesn't apply
+  that resolution). Nothing in the packaged app needs it present in
+  `node_modules` anymore for this new path; the legacy renderer (still
+  running through Phase 8) is unaffected since it's not part of the Vite
+  build and keeps resolving `tesseract.js` from `node_modules` at dev-time
+  (devDependencies are present during development, only excluded from
+  **packaged** output — the legacy renderer isn't packaged via `out/**`
+  until Phase 7 anyway).
+- **Finding, fixed:** the plan's stock CSP (`connect-src 'self'`) blocks a
+  real browser behavior — WASM instantiation does an internal `fetch()` on a
+  `data:` URI as part of loading the core module. Confirmed via a real CSP
+  violation caught by the offline harness before the fix. Added `data:` to
+  `connect-src` in both `src/renderer/index.html` and
+  `src/renderer/ocr-verify.html`'s CSP meta tags.
+- Two new test harnesses mirroring the established hidden-`BrowserWindow`
+  pattern, loading the **built** `out/renderer/ocr-verify.html` directly
+  (per the plan's own "launch compiled output directly" guidance, since
+  electron-builder doesn't package `out/**` until Phase 7):
+  - `npm run test:ocr:offline` (`test/run-ocr-verify-vendored.js`,
+    `--proxy-server=127.0.0.1:9`): loads via `file://`, network refused.
+    **PASSES**, zero CSP violations, zero console errors. This is the
+    scenario that actually ships (packaged app, potentially offline/blocked
+    network) and the one Phase 5's intro text calls the real risk.
+  - `npm run test:ocr:dev` (`test/run-ocr-verify-dev-server.js`): starts a
+    plain `vite.createServer()` with the same `root`/`base` as
+    `electron.vite.config.ts`'s renderer block (a faithful stand-in for
+    `electron-vite dev`'s own renderer dev server, which is just Vite
+    underneath with no custom static-serving layer) and loads
+    `ocr-verify.html` from it via `http://localhost:PORT`. **FAILS** — see
+    below.
+
+### Stop reason: `test:ocr:dev` fails after 5 genuine fix attempts
+
+Phase 5's gate requires `test:ocr` to pass under **both** `electron-vite dev`
+and a packaged/offline build. The offline leg passes cleanly; the dev-server
+leg does not, and MIGRATION.md's stop condition ("a gate still fails after 3
+genuine fix attempts") is met — 5 distinct attempts were made:
+
+1. **CSP `connect-src: data:` fix** (described above) — necessary, fixed a
+   real violation, but didn't resolve the dev-server failure.
+2. **Bypassed SIMD feature-detection** by pointing `corePath` at the exact
+   `tesseract-core.wasm.js` file instead of a directory (ruling out
+   `wasm-feature-detect`'s `simd()` check as the cause) — no change.
+3. **Inspected the raw HTTP response** for `eng.traineddata` from the dev
+   server directly (`Invoke-WebRequest`): `Status 200`, correct byte count
+   (10,923,060), correct gzip magic bytes (`1F 8B`) — the file genuinely
+   arrives intact. One anomaly noted: `Content-Type:` is empty (Vite's
+   static-file MIME guesser doesn't recognize `.traineddata`), but this
+   shouldn't affect `fetch().arrayBuffer()`, which doesn't depend on
+   Content-Type.
+4. **Added `window.onerror`/`unhandledrejection` handlers and a 20s internal
+   safety timeout** to `ocr-verify.ts` to turn what was an indefinite hang
+   into a diagnosable result. This surfaced the real error: `Uncaught Error:
+   initialization failed`, thrown from inside tesseract.js's bundled code
+   (`node_modules/.vite/deps/tesseract__js.js`), with console warnings
+   `Error opening data file ./eng.traineddata` / `Tesseract couldn't load
+   any languages!` — these are native Tesseract-engine messages that occur
+   when the WASM virtual filesystem never received a valid traineddata
+   write, i.e. the JS-layer load succeeded enough to report progress but the
+   native init still can't find usable data.
+5. **Disabled tesseract.js's IndexedDB cache** (`cacheMethod: 'none'`) to
+   rule out a stale/bad cache entry from an earlier failed attempt at the
+   same `http://localhost:5173` origin shadowing a fresh fetch — identical
+   failure, ruling this out too.
+
+The same vendored files, same `createWorker` options shape, and same
+known-string check all work correctly when loaded via `file://` (offline
+leg). Something about tesseract.js's native data-loading path specifically
+fails under the Vite dev server's `http://localhost` origin, and the precise
+root cause is not yet identified. This is isolated to `npm run dev:vite`
+(developer hot-reload convenience) — it does not affect the packaged/shipped
+app, and does not touch redaction/masking (verified separately, still
+passing).
+
+### What a human needs to decide
+
+- Whether OCR working under `npm run dev:vite` is actually required before
+  resuming, or whether Phase 5's gate can be relaxed to the packaged/offline
+  leg only (with dev-mode OCR tracked as a known follow-up, since the
+  production path is fully verified).
+- If dev-mode OCR must work: further investigation should start from the
+  `Uncaught Error: initialization failed` / `node_modules/.vite/deps/
+  tesseract__js.js` stack and tesseract.js's `worker-script/index.js`
+  `loadAndGunzipFile` path, comparing exact byte-for-byte behavior between
+  the two origins (e.g. instrument `adapter.gunzip`'s input/output lengths,
+  or test whether Vite's dependency pre-bundling of `tesseract.js` itself
+  — note the `.vite/deps/tesseract__js.js` path, meaning Vite is
+  pre-bundling the package rather than leaving it untouched — somehow
+  alters the worker-spawning code path versus a production build, where no
+  such pre-bundling occurs).
+
+### Files touched this phase (uncommitted as WIP)
+
+`.gitignore`, `electron.vite.config.ts`, `package.json`,
+`src/renderer/index.html` (CSP fix), `scripts/vendor-tesseract.js` (new),
+`src/renderer/ocr-verify.html` (new), `src/renderer/src/ocr-verify.ts` (new),
+`test/run-ocr-verify-dev-server.js` (new, failing),
+`test/run-ocr-verify-vendored.js` (new, passing).
+
+**Commit:** `migration: phase 5 - WIP (stopped)`
 
 ---
 
@@ -437,3 +579,8 @@ string correctly first try, 4 words, no retries needed.
       "good").
 - [ ] **ImmyBot** scripts and detection updated for the Phase 9 names before
       the first renamed release.
+- [ ] **Phase 5 follow-up:** decide whether OCR must work under `npm run
+      dev:vite` (see Phase 5's "Stop reason" above) — the packaged/offline
+      path is fully verified; only the Vite-dev-server hot-reload path has
+      an unresolved `Uncaught Error: initialization failed` from
+      tesseract.js's bundled worker code.

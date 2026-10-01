@@ -6,10 +6,10 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' data:"
     />
-    <title>Cardonet Capture</title>
+    <title>OCR verify (vendored assets)</title>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="./src/main.tsx"></script>
+    <pre id="out">running…</pre>
+    <script type="module" src="./src/ocr-verify.ts"></script>
   </body>
 </html>
