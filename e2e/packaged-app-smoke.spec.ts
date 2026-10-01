@@ -1,15 +1,14 @@
-// Phase 0 gate: electron-builder --dir still packages the (currently legacy)
-// app correctly after the new Vite/TS/React/Tailwind toolchain was added as
-// devDependencies plus react/react-dom as runtime deps. Drives the packaged
-// --dir exe directly (not `npm start`) to catch any packaging regression the
-// new node_modules tree might cause.
+// Originally a Phase 0 gate ("does packaging still work after the new
+// toolchain lands"); as of Phase 7, electron-builder.yml ships out/** (the
+// React app) as the packaged entry instead of the legacy main.js/renderer --
+// this now smoke-tests the real, shipped packaged app.
 import { test, expect, _electron as electron } from '@playwright/test';
 import path from 'path';
 
 const repoRoot = path.resolve(__dirname, '..');
 const exePath = path.join(repoRoot, 'dist', 'win-unpacked', 'TicketScribe.exe');
 
-test('packaged --dir exe opens the legacy UI', async () => {
+test('packaged --dir exe opens the app', async () => {
   const app = await electron.launch({ executablePath: exePath });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');

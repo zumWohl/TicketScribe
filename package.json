@@ -2,10 +2,12 @@
   "name": "ticketscribe",
   "version": "0.1.0",
   "description": "Automated work-log capture with local VLM analysis",
-  "main": "main.js",
+  "main": "out/main/index.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --inspect",
+    "prestart": "npm run vendor:tesseract",
+    "start": "electron-vite dev",
+    "predev": "npm run vendor:tesseract",
+    "dev": "electron-vite dev --inspect",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "pretest": "npm run build:redact-cjs",
     "test": "electron test/run-mask-verify.js",
@@ -13,7 +15,8 @@
     "test:ocr": "electron test/run-ocr-verify.js",
     "test:ocr:offline": "electron test/run-ocr-verify-vendored.js --proxy-server=127.0.0.1:9",
     "test:ocr:dev": "electron test/run-ocr-verify-dev-server.js",
-    "dist": "electron-builder --win nsis --x64 --publish never",
+    "predist": "npm run vendor:tesseract",
+    "dist": "electron-vite build && electron-builder --win nsis --x64 --publish never",
     "postinstall": "node scripts/vendor-tesseract.js",
     "vendor:tesseract": "node scripts/vendor-tesseract.js",
     "prebuild:vite": "npm run vendor:tesseract",
@@ -42,6 +45,8 @@
     "pixelmatch": "^7.2.0",
     "playwright": "^1.63.0",
     "pngjs": "^7.0.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "tesseract.js": "^5.1.1",
     "typescript": "^7.0.2",
@@ -49,8 +54,6 @@
     "vitest": "^5.0.3"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "better-sqlite3": "^12.11.1"
   }
 }

@@ -2,9 +2,9 @@
 productName: TicketScribe
 asar: false
 files:
-  - main.js
-  - main/**
-  - renderer/**
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
   - package.json
 win:
   target:

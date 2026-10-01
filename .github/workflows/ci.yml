@@ -40,7 +40,7 @@ jobs:
       - name: Package (--dir, unpacked)
         run: npx electron-builder --dir
 
-      - name: Playwright e2e (packaged smoke + React renderer: smoke/visual-diff/full pipeline + provider IPC)
+      - name: Playwright e2e (packaged app smoke/node_modules/full-pipeline + React renderer smoke/visual-diff/full pipeline + provider IPC)
         # legacy-baseline.spec.ts is excluded by playwright.config.ts's
         # testIgnore -- it did its one-time job creating e2e/baseline/*.png
         # at Gate 0 and must never run again (it unconditionally regenerates
