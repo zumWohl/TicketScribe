@@ -31,6 +31,9 @@ jobs:
       - name: Package (--dir, unpacked)
         run: npx electron-builder --dir
 
+      - name: Playwright e2e (legacy baseline + ported main + packaged smoke)
+        run: npx playwright test
+
       - name: Upload --dir build output
         uses: actions/upload-artifact@v4
         with:

@@ -11,17 +11,32 @@
 //
 // Everything here lives in the main process (full FS/child_process access),
 // the same reasoning as desktopCapturer already being main-process-only.
+//
+// 1:1 port of main/events-capture.js -- no logic changes.
 
-const { spawn, execFileSync } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import type {
+  ActivityEvent,
+  EventsStartOptions,
+  EventsStopOptions,
+  WindowCategory,
+} from '../shared/events';
 
-let sqlite3 = null;
+type Sqlite3Database = {
+  prepare(sql: string): { all(...params: unknown[]): any[] };
+  close(): void;
+};
+type Sqlite3Ctor = new (path: string, opts?: { readonly?: boolean }) => Sqlite3Database;
+
+let sqlite3: Sqlite3Ctor | null = null;
 try {
   // Native module -- requires `npx electron-rebuild` after `npm install`.
   // If it isn't built for this Electron ABI, browser-history capture simply
   // no-ops rather than crashing the app.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   sqlite3 = require('better-sqlite3');
 } catch {
   sqlite3 = null;
@@ -29,7 +44,7 @@ try {
 
 // ─── Window/app-focus activity (primary source) ────────────────────────────
 
-const WINDOW_POLL_SCRIPT = `
+export const WINDOW_POLL_SCRIPT = `
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -61,7 +76,7 @@ const TERMINAL_PROCESSES = ['powershell', 'pwsh', 'cmd', 'windowsterminal', 'con
 const ADMIN_CONSOLE_TITLE_RE = /portal\.azure\.com|admin\.microsoft\.com|entra\.microsoft\.com|outlook\.office|exchange admin|intune|endpoint\.microsoft\.com/i;
 const PSA_TITLE_RE = /halo(itsm|servicedesk|psa)?/i;
 
-function classifyWindow(processName, windowTitle) {
+function classifyWindow(processName: string, windowTitle: string): WindowCategory {
   const proc = (processName || '').toLowerCase();
   const title = windowTitle || '';
 
@@ -72,16 +87,24 @@ function classifyWindow(processName, windowTitle) {
   return 'other';
 }
 
-let pollProcess = null;
-let windowEntries = [];
-let currentWindowEntry = null;
+interface WindowEntry {
+  timestamp: number;
+  processName: string;
+  windowTitle: string;
+  category: WindowCategory;
+  durationMs: number;
+}
 
-function handleWindowSample(timestamp, processName, windowTitle) {
+let pollProcess: ChildProcessWithoutNullStreams | null = null;
+let windowEntries: WindowEntry[] = [];
+let currentWindowEntry: WindowEntry | null = null;
+
+function handleWindowSample(timestamp: number, processName: string, windowTitle: string): void {
   const isSameWindow = currentWindowEntry
     && currentWindowEntry.processName === processName
     && currentWindowEntry.windowTitle === windowTitle;
 
-  if (isSameWindow) {
+  if (isSameWindow && currentWindowEntry) {
     currentWindowEntry.durationMs = timestamp - currentWindowEntry.timestamp;
     return;
   }
@@ -96,7 +119,7 @@ function handleWindowSample(timestamp, processName, windowTitle) {
   };
 }
 
-function startWindowPolling() {
+function startWindowPolling(): void {
   let buffer = '';
   try {
     pollProcess = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOW_POLL_SCRIPT]);
@@ -107,7 +130,7 @@ function startWindowPolling() {
   pollProcess.stdout.on('data', chunk => {
     buffer += chunk.toString();
     const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop();
+    buffer = lines.pop() ?? '';
     for (const line of lines) {
       const parts = line.split('|');
       if (parts.length < 3) continue;
@@ -119,7 +142,7 @@ function startWindowPolling() {
   pollProcess.on('error', () => { pollProcess = null; });
 }
 
-function stopWindowPolling() {
+function stopWindowPolling(): WindowEntry[] {
   if (pollProcess) {
     try { pollProcess.kill(); } catch { /* already gone */ }
     pollProcess = null;
@@ -136,7 +159,7 @@ function stopWindowPolling() {
 // PSReadLine history has no per-command timestamp -- diffed lines are
 // bucketed as "sometime during this recording," not precisely sequenced.
 
-function getPsHistoryPath() {
+function getPsHistoryPath(): string | null {
   try {
     const out = execFileSync(
       'powershell.exe',
@@ -150,7 +173,7 @@ function getPsHistoryPath() {
   }
 }
 
-function countLines(filePath) {
+function countLines(filePath: string): number {
   try {
     return fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter(Boolean).length;
   } catch {
@@ -158,12 +181,17 @@ function countLines(filePath) {
   }
 }
 
-function snapshotPsHistory() {
+interface PsHistorySnapshot {
+  historyPath: string | null;
+  startLineCount: number;
+}
+
+function snapshotPsHistory(): PsHistorySnapshot {
   const historyPath = getPsHistoryPath();
   return { historyPath, startLineCount: historyPath ? countLines(historyPath) : 0 };
 }
 
-function diffPsHistory(snapshot) {
+function diffPsHistory(snapshot: PsHistorySnapshot | null): string[] {
   if (!snapshot || !snapshot.historyPath) return [];
   try {
     const lines = fs.readFileSync(snapshot.historyPath, 'utf8').split(/\r?\n/).filter(Boolean);
@@ -185,13 +213,13 @@ function diffPsHistory(snapshot) {
 // window-activity source (category "terminal", with dwell time), just
 // without the actual commands typed.
 
-function getTranscriptDir() {
+function getTranscriptDir(): string {
   const dir = path.join(os.tmpdir(), 'ticketscribe-transcripts');
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* already exists */ }
   return dir;
 }
 
-function getTranscriptProfileSnippet() {
+export function getTranscriptProfileSnippet(): string {
   const dir = getTranscriptDir().replace(/\\/g, '\\\\');
   return [
     'if (-not $global:TicketScribeTranscriptStarted) {',
@@ -203,18 +231,18 @@ function getTranscriptProfileSnippet() {
   ].join('\n');
 }
 
-function collectTranscripts(startMs, endMs) {
+function collectTranscripts(startMs: number, endMs: number): Array<{ file: string; content: string }> {
   const dir = getTranscriptDir();
-  let files;
+  let files: string[];
   try {
     files = fs.readdirSync(dir);
   } catch {
     return [];
   }
-  const results = [];
+  const results: Array<{ file: string; content: string }> = [];
   for (const name of files) {
     const full = path.join(dir, name);
-    let stat;
+    let stat: fs.Stats;
     try { stat = fs.statSync(full); } catch { continue; }
     if (stat.mtimeMs < startMs || stat.birthtimeMs > endMs) continue;
     try {
@@ -227,14 +255,14 @@ function collectTranscripts(startMs, endMs) {
 // ─── Browser: Chrome/Edge history ──────────────────────────────────────────
 
 const CHROME_EPOCH_OFFSET_MS = 11644473600000; // Windows FILETIME epoch (1601-01-01) vs Unix epoch
-const chromeTimeToMs = chromeTime => chromeTime / 1000 - CHROME_EPOCH_OFFSET_MS;
-const msToChromeTime = ms => (ms + CHROME_EPOCH_OFFSET_MS) * 1000;
+const chromeTimeToMs = (chromeTime: number): number => chromeTime / 1000 - CHROME_EPOCH_OFFSET_MS;
+const msToChromeTime = (ms: number): number => (ms + CHROME_EPOCH_OFFSET_MS) * 1000;
 
 const ADMIN_PORTAL_RE = /admin\.microsoft\.com|entra\.microsoft\.com|portal\.azure\.com|outlook\.office\.com\/exchange|endpoint\.microsoft\.com|intune|exchange admin/i;
 const KB_DOCS_RE = /docs\.microsoft\.com|learn\.microsoft\.com|support\.microsoft\.com|knowledge.?base|\/kb\//i;
 const PSA_URL_RE = /halo/i;
 
-function classifyUrl(url, title) {
+function classifyUrl(url: string, title: string): 'admin-portal' | 'psa' | 'kb-docs' | 'other' {
   const s = `${url || ''} ${title || ''}`;
   if (ADMIN_PORTAL_RE.test(s)) return 'admin-portal';
   if (PSA_URL_RE.test(s)) return 'psa';
@@ -242,7 +270,7 @@ function classifyUrl(url, title) {
   return 'other';
 }
 
-function chromiumProfilePaths() {
+function chromiumProfilePaths(): Array<{ name: string; path: string }> {
   const local = process.env.LOCALAPPDATA || '';
   return [
     { name: 'Chrome', path: path.join(local, 'Google', 'Chrome', 'User Data', 'Default', 'History') },
@@ -250,11 +278,18 @@ function chromiumProfilePaths() {
   ].filter(p => fs.existsSync(p.path));
 }
 
-function queryBrowserHistory(historyDbPath, startMs, endMs) {
+interface BrowserVisit {
+  timestamp: number;
+  url: string;
+  title: string;
+  category: 'admin-portal' | 'psa' | 'kb-docs' | 'other';
+}
+
+function queryBrowserHistory(historyDbPath: string, startMs: number, endMs: number): BrowserVisit[] {
   if (!sqlite3) return [];
   // Copy first: the History file is locked while the browser holds it open.
   const tmpCopy = path.join(os.tmpdir(), `ticketscribe-history-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
-  let db = null;
+  let db: Sqlite3Database | null = null;
   try {
     fs.copyFileSync(historyDbPath, tmpCopy);
     db = new sqlite3(tmpCopy, { readonly: true });
@@ -277,10 +312,10 @@ function queryBrowserHistory(historyDbPath, startMs, endMs) {
   }
 }
 
-function collectBrowserHistory(startMs, endMs) {
+function collectBrowserHistory(startMs: number, endMs: number): Array<BrowserVisit & { browser: string }> {
   if (!sqlite3) return [];
   const profiles = chromiumProfilePaths();
-  let all = [];
+  let all: Array<BrowserVisit & { browser: string }> = [];
   for (const p of profiles) {
     all = all.concat(queryBrowserHistory(p.path, startMs, endMs).map(e => ({ ...e, browser: p.name })));
   }
@@ -290,10 +325,10 @@ function collectBrowserHistory(startMs, endMs) {
 // ─── Orchestration ──────────────────────────────────────────────────────────
 
 let sessionStart = 0;
-let psHistorySnapshot = null;
+let psHistorySnapshot: PsHistorySnapshot | null = null;
 let transcriptEnabled = false;
 
-function start({ window = true, transcript = false } = {}) {
+export function start({ window = true, transcript = false }: EventsStartOptions = {}): void {
   sessionStart = Date.now();
   windowEntries = [];
   currentWindowEntry = null;
@@ -302,11 +337,11 @@ function start({ window = true, transcript = false } = {}) {
   if (window) startWindowPolling();
 }
 
-function stop({ terminal = true, browserHistory = true } = {}) {
+export function stop({ terminal = true, browserHistory = true }: EventsStopOptions = {}): ActivityEvent[] {
   const sessionEnd = Date.now();
   const windowSamples = stopWindowPolling();
 
-  const events = windowSamples.map(w => ({
+  const events: ActivityEvent[] = windowSamples.map(w => ({
     type: 'window',
     timestamp: w.timestamp,
     detail: { processName: w.processName, windowTitle: w.windowTitle, category: w.category, durationMs: w.durationMs },
@@ -332,5 +367,3 @@ function stop({ terminal = true, browserHistory = true } = {}) {
   events.sort((a, b) => a.timestamp - b.timestamp);
   return events;
 }
-
-module.exports = { start, stop, getTranscriptProfileSnippet, WINDOW_POLL_SCRIPT };

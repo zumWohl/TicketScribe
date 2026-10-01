@@ -117,7 +117,83 @@ New scripts added, legacy `start`/`dev`/`dist`/`rebuild`/`test` untouched:
 
 ## Phase 1 - Main process to TypeScript
 
-**Status: not started**
+**Status: COMPLETE**
+
+Ported `main.js` → `src/main/index.ts` and `main/events-capture.js` →
+`src/main/events-capture.ts`, typed, no logic changes. `src/main/index.ts`
+now loads the **legacy** `renderer/index.html` (`path.join(__dirname, '..',
+'..', 'renderer', 'index.html')` — `out/main/` is two levels below repo
+root), not the Phase 0 React stub. Added `src/shared/events.ts` with a typed
+`ActivityEvent`/`WindowEventDetail`/`TerminalCommandDetail`/
+`TerminalTranscriptDetail`/`BrowserEventDetail` union matching the real
+runtime shapes (window events carry `category`/`durationMs` inside `detail`,
+same as the legacy code — not flattened to top-level, since that would be a
+behavior/shape change this phase doesn't call for).
+
+Minimal one-line change to the **legacy** `main/events-capture.js`: added
+`WINDOW_POLL_SCRIPT` to its `module.exports`, as the plan explicitly
+requires for the byte-identity test. No other legacy behavior touched.
+
+**Deviation / cleanup:** deleted Phase 0's `e2e/stub-smoke.spec.ts`. It
+asserted the compiled `out/main/index.js` renders the React stub
+(`#root h1`) — true in Phase 0, but Phase 1 repoints that same entrypoint at
+the legacy renderer, so the stub is now unreachable from the app's actual
+boot path until Phase 6a rebuilds the renderer for real. Keeping a test that
+asserts a premise the phase intentionally invalidates would just be dead
+weight; Phase 1's gate (below) doesn't require it, and `out/renderer/*` is
+still produced by `build:vite`, just not loaded by anyone yet.
+
+Added `e2e/visual-diff.ts` (`pixelmatch` + `pngjs`, new devDependencies) as
+the shared screenshot-comparison helper promised in Gate 0. **Finding:**
+Gate 0's baseline PNGs are 1483×954; a same-session re-screenshot of the
+identical legacy app is 1184×761 — the dev machine's display-scale factor
+changed between the two runs (confirmed by briefly regenerating
+`legacy-baseline.spec.ts`'s output and diffing dimensions, then restoring the
+committed baseline with `git checkout`). `comparePng` therefore
+nearest-neighbor-resamples the actual screenshot to the baseline's
+dimensions before diffing, and uses a looser threshold when it had to
+(`VISUAL_DIFF_THRESHOLD = 2%` unscaled, `VISUAL_DIFF_THRESHOLD_RESAMPLED =
+8%` when a resample happened, to absorb resampling blur on top of real
+diff). This is the threshold Gate 0 deferred choosing; recorded here instead
+since Phase 1 is what first needed a working comparison.
+
+New Playwright spec `e2e/phase1-ts-main.spec.ts`: launches
+`out/main/index.js`, asserts `get-sources` (invoked the same way the real UI
+does, via the legacy renderer's `require('electron').ipcRenderer`) returns at
+least one source, then screenshots the 5 deterministic stages/screens (ready
+×2 source choices, templates, settings, ready-again) and diffs each against
+Gate 0's baseline. Deliberately does **not** compare the countdown/
+recording/review screenshots — those contain a live timer and video frames
+that are non-deterministic frame-to-frame even with zero code changes, so
+pixel-diffing them would be flaky rather than meaningful.
+
+New vitest spec `src/main/events-capture.test.ts`: byte-identity of
+`WINDOW_POLL_SCRIPT` between legacy and ported modules (via
+`createRequire` to import the legacy CJS file), and a live-spawn test that
+runs the actual script for 3s and asserts at least one well-formed
+`timestamp|process|title` line.
+
+**Important operational note for future phases:** `legacy-baseline.spec.ts`
+must never be re-run as part of routine "run the whole suite" checks — doing
+so overwrites `e2e/baseline/*.png` on disk (confirmed twice this phase).
+Whenever the full Playwright suite is run for convenience, immediately
+`git checkout -- e2e/baseline` afterward and verify `git status` is clean
+there before committing.
+
+### Gate results
+
+- `npm test` (mask-verify) — **PASS**.
+- `npm run typecheck` — **PASS**.
+- `npm run test:unit` (vitest) — **PASS**, both new
+  `events-capture.test.ts` cases.
+- `e2e/phase1-ts-main.spec.ts` — **PASS**: `get-sources` returned ≥1 source;
+  all 5 compared screenshots passed (resampled, within the 8% threshold —
+  see the display-scale finding above).
+- `e2e/legacy-baseline.spec.ts` re-run against `npm start` — **PASS**
+  (baseline restored via `git checkout` immediately after, per the note
+  above).
+
+**Commit:** `migration: phase 1 - main process to typescript`
 
 ---
 
