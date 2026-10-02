@@ -6,7 +6,7 @@
 // Highly imperative sections (capture, review/redact canvas) keep using
 // refs for direct DOM/canvas access rather than being redesigned into
 // "idiomatic React", matching the plan's port-not-redesign instruction.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import logoUrl from './assets/cardonet-logo.png';
 import './styles.css';
 import { aHash, clampThreshold, shouldKeepAsKeyframe, type AHash } from './lib/hash';
@@ -37,6 +37,55 @@ const MAX_ZOOM = 6;
 type Screen = 'work' | 'settings' | 'templates';
 type Stage = 'ready' | 'countdown' | 'recording' | 'review' | 'processing' | 'sent';
 type CaptureSource = 'window' | 'screen';
+
+interface WorkState {
+  screen: Screen;
+  stage: Stage;
+}
+
+// Explicit transition table instead of letting call sites set an arbitrary
+// Stage directly -- each guarded action only takes effect from the stage(s)
+// it names as its precondition, so e.g. 'recording' is only reachable by
+// dispatching beginRecording from 'countdown'. navigate/resetToReady stay
+// unconditional, matching the pre-reducer setScreen/setStage('ready') calls,
+// which had no guards either.
+type WorkAction =
+  | { type: 'navigate'; screen: Screen }
+  | { type: 'startCountdown' }
+  | { type: 'cancelCountdown' }
+  | { type: 'beginRecording' }
+  | { type: 'recordingFailed' }
+  | { type: 'stopToReview' }
+  | { type: 'stopNoFrames' }
+  | { type: 'startProcessing' }
+  | { type: 'generationSent' }
+  | { type: 'resetToReady' };
+
+function workReducer(state: WorkState, action: WorkAction): WorkState {
+  switch (action.type) {
+    case 'navigate':
+      return { ...state, screen: action.screen };
+    case 'startCountdown':
+      return state.stage === 'ready' ? { ...state, stage: 'countdown' } : state;
+    case 'cancelCountdown':
+    case 'recordingFailed':
+      return state.stage === 'countdown' ? { ...state, stage: 'ready' } : state;
+    case 'beginRecording':
+      return state.stage === 'countdown' ? { ...state, stage: 'recording' } : state;
+    case 'stopToReview':
+      return state.stage === 'recording' ? { ...state, stage: 'review' } : state;
+    case 'stopNoFrames':
+      return state.stage === 'recording' ? { ...state, stage: 'ready' } : state;
+    case 'startProcessing':
+      return state.stage === 'review' ? { ...state, stage: 'processing' } : state;
+    case 'generationSent':
+      return state.stage === 'processing' ? { ...state, stage: 'sent' } : state;
+    case 'resetToReady':
+      return { ...state, stage: 'ready' };
+    default:
+      return state;
+  }
+}
 type SummaryModel = 'claude' | 'ollama';
 
 function summaryModelLabel(model: SummaryModel): string {
@@ -115,10 +164,8 @@ function autoMasksFor(kf: Keyframe): Mask[] {
 
 export default function App() {
   // ─── Screen / stage ───────────────────────────────────────────────────
-  const [screen, setScreenState] = useState<Screen>('work');
-  const [stage, setStageState] = useState<Stage>('ready');
-  const setScreen = useCallback((s: Screen) => setScreenState(s), []);
-  const setStage = useCallback((s: Stage) => setStageState(s), []);
+  const [workState, dispatch] = useReducer(workReducer, { screen: 'work', stage: 'ready' } as WorkState);
+  const { screen, stage } = workState;
 
   useEffect(() => {
     document.body.dataset.screen = screen;
@@ -456,7 +503,7 @@ export default function App() {
       await startCapture();
     } catch (err) {
       alert(`Could not start capture:\n${(err as Error).message}`);
-      setStage('ready');
+      dispatch({ type: 'recordingFailed' });
       return;
     }
     setRecTitle(currentTicket ? `Resolution recording · #${currentTicket}` : 'Resolution recording');
@@ -465,7 +512,7 @@ export default function App() {
     setEventsDegradedMessage(null);
     setRecordingOverlayVisible(true);
     startTimer();
-    setStage('recording');
+    dispatch({ type: 'beginRecording' });
 
     ensureOCRWorker().catch(() => {});
 
@@ -475,10 +522,10 @@ export default function App() {
         transcript: ls('transcriptEnabled', 'false') === 'true',
       })
       .catch(() => {});
-  }, [startCapture, startTimer, setStage]);
+  }, [startCapture, startTimer]);
 
   const startCountdown = useCallback(() => {
-    setStage('countdown');
+    dispatch({ type: 'startCountdown' });
     let n = 3;
     setCountdownN(n);
     if (countdownHandleRef.current) clearInterval(countdownHandleRef.current);
@@ -491,12 +538,12 @@ export default function App() {
         setCountdownN(n);
       }
     }, 800);
-  }, [beginRecording, setStage]);
+  }, [beginRecording]);
 
   const cancelCountdown = useCallback(() => {
     if (countdownHandleRef.current) clearInterval(countdownHandleRef.current);
-    setStage('ready');
-  }, [setStage]);
+    dispatch({ type: 'cancelCountdown' });
+  }, []);
 
   // ─── Review & redact ────────────────────────────────────────────────────
   const [reviewIndex, setReviewIndex] = useState(0);
@@ -855,9 +902,9 @@ export default function App() {
       setSentHeading(currentTicket ? `Ticket-ready work log for #${currentTicket}` : 'Ticket-ready work log');
       setSentEyebrow(`Summary generated · ${summaryModelLabel(summaryModel)}`);
       setSaveNote(null);
-      setStage('sent');
+      dispatch({ type: 'generationSent' });
     },
-    [summaryModel, setStage],
+    [summaryModel],
   );
 
   const showGenerationFailure = useCallback(
@@ -878,7 +925,7 @@ export default function App() {
       return;
     }
 
-    setStage('processing');
+    dispatch({ type: 'startProcessing' });
     resetProcSteps();
     setRawTextFallback(null);
     setProcEyebrow('Working');
@@ -930,7 +977,7 @@ export default function App() {
       setProgress(80, 'Generation failed');
       showGenerationFailure((err as Error).message, rawFallbackText);
     }
-  }, [summaryModel, resetProcSteps, procStep, setProgress, finishWithSummary, showGenerationFailure, setStage]);
+  }, [summaryModel, resetProcSteps, procStep, setProgress, finishWithSummary, showGenerationFailure]);
 
   const useRawTextInstead = useCallback(() => {
     if (rawTextFallback) finishWithSummary(rawTextFallback);
@@ -948,8 +995,8 @@ export default function App() {
     setTimerText('00:00');
     setProcEyebrow('Working');
     setSaveNote(null);
-    setStage('ready');
-  }, [setStage]);
+    dispatch({ type: 'resetToReady' });
+  }, []);
 
   const onStop = useCallback(async () => {
     stopCapture();
@@ -970,14 +1017,14 @@ export default function App() {
 
     if (keyframesRef.current.length === 0) {
       alert('No keyframes were captured — the screen may not have changed enough.');
-      setStage('ready');
+      dispatch({ type: 'stopNoFrames' });
       return;
     }
 
-    setStage('review');
+    dispatch({ type: 'stopToReview' });
     setReviewReady(false);
     analyzeFrames();
-  }, [stopCapture, stopTimer, analyzeFrames, setStage]);
+  }, [stopCapture, stopTimer, analyzeFrames]);
 
   const onSave = useCallback(async () => {
     const summary = summaryText.trim();
@@ -1057,21 +1104,24 @@ export default function App() {
             </div>
           </div>
           <nav className="side-nav">
-            <button className={`nav-item${screen === 'work' ? ' active' : ''}`} onClick={() => setScreen('work')}>
+            <button
+              className={`nav-item${screen === 'work' ? ' active' : ''}`}
+              onClick={() => dispatch({ type: 'navigate', screen: 'work' })}
+            >
               New Recording
             </button>
             <button
               className={`nav-item${screen === 'templates' ? ' active' : ''}`}
               onClick={() => {
                 openTemplateEditor(null);
-                setScreen('templates');
+                dispatch({ type: 'navigate', screen: 'templates' });
               }}
             >
               Summary Templates
             </button>
             <button
               className={`nav-item${screen === 'settings' ? ' active' : ''}`}
-              onClick={() => setScreen('settings')}
+              onClick={() => dispatch({ type: 'navigate', screen: 'settings' })}
             >
               Settings
             </button>
@@ -1880,7 +1930,7 @@ export default function App() {
                   className="btn btn-pink btn-md"
                   onClick={() => {
                     saveSettings();
-                    setScreen('work');
+                    dispatch({ type: 'navigate', screen: 'work' });
                   }}
                 >
                   Save settings
