@@ -5,7 +5,6 @@ import * as eventsCapture from './events-capture';
 import type { EventsStartOptions, EventsStopOptions } from '../shared/events';
 import type { GenerateRequest } from '../shared/generate';
 import * as providers from './providers';
-import * as keys from './keys';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -24,6 +23,7 @@ function createWindow(): void {
       // direct Node/Electron require().
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
     },
   });
@@ -79,9 +79,14 @@ ipcMain.handle('get-sources', async (_e, opts: { types?: string[] } | undefined)
   });
 });
 
-// Write the confirmed summary text to Documents/CardonetCapture/
+// Write the confirmed summary text to Documents/CardonetCapture/. `filename`
+// is renderer-supplied -- reject anything that isn't a bare filename (no path
+// separators, no traversal) before it reaches the filesystem.
 ipcMain.handle('save-summary', async (_e, { filename, content }: { filename: string; content: string }) => {
   try {
+    if (!filename || path.basename(filename) !== filename) {
+      throw new Error('Invalid filename.');
+    }
     const dir = path.join(app.getPath('documents'), 'CardonetCapture');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const filepath = path.join(dir, filename);
@@ -116,12 +121,6 @@ ipcMain.handle('events:get-transcript-snippet', () => {
 // src/main/providers/index.ts for the dispatcher.
 ipcMain.handle('generate', (_e, request: GenerateRequest) => {
   return providers.generate(request);
-});
-ipcMain.handle('keys:set', (_e, provider: string, key: string) => {
-  keys.setApiKey(provider, key);
-});
-ipcMain.handle('keys:has', (_e, provider: string) => {
-  return keys.hasApiKey(provider);
 });
 
 app.whenReady().then(createWindow);

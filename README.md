@@ -1,8 +1,8 @@
 # Cardonet Capture
 
-Cardonet Capture records your screen while you resolve an issue, detects and masks sensitive on-screen data (passwords, API keys, tokens, emails, tenant IDs, client names), lets you review and adjust the masks frame by frame, then turns the recording into a work summary. You can generate the note locally with Ollama or with cloud AI (Claude, ChatGPT, etc.).
+Cardonet Capture records your screen while you resolve an issue, detects and masks sensitive on-screen data (passwords, API keys, tokens, emails, tenant IDs, client names), lets you review and adjust the masks frame by frame, then turns the recording into a work summary. You can generate the note locally with Ollama or with the cloud model (Claude, routed through the org's Azure deployment).
 
-Hidden regions are removed from the pixels before anything is sent, and nothing leaves your machine unless you pick a cloud model.
+Hidden regions are removed from the pixels before anything is sent, and nothing leaves your machine unless you pick the cloud model.
 
 ## Requirements
 
@@ -10,8 +10,7 @@ Hidden regions are removed from the pixels before anything is sent, and nothing 
 - Windows. Activity capture uses PowerShell and Win32 APIs. The core record, redact, and summarize flow works on other platforms, but the activity-timeline features are Windows only.
 - A summary model. Pick one:
   - Ollama running locally (the default, fully on-device). Pull a vision model and a text model, for example `ollama pull llava` and `ollama pull llama3`.
-  - An Anthropic API key for Claude (optional cloud alternative).
-  - An Azure OpenAI resource (endpoint, deployment name, API key) with a vision-capable deployment (optional cloud alternative).
+  - Claude (cloud alternative, routed through the org's Azure deployment). Requires `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, and `AZURE_OPENAI_KEY` to be set in the environment the app is launched with -- there is no Settings UI for this, it's operator/IT-configured, not technician-configured.
 
 ## Install and run
 
@@ -52,11 +51,11 @@ The workflow has three steps: Record, Review and redact, then Summary.
 ### What leaves your device
 
 - Ollama: everything stays on your machine and network. Nothing is transmitted.
-- Claude and Azure OpenAI: the redacted, downscaled keyframes are sent to the provider's API. Masked regions are already removed, but any unmasked pixels in a sent frame do leave the device, so mask anything sensitive during review, or use Ollama. The full-resolution originals are never sent, and the recording is cleared from memory once the summary is generated.
+- Claude: the redacted, downscaled keyframes are sent to the org's Azure OpenAI deployment. Masked regions are already removed, but any unmasked pixels in a sent frame do leave the device, so mask anything sensitive during review, or use Ollama. The full-resolution originals are never sent, and the recording is cleared from memory once the summary is generated.
 
 ## Features
 
-- Summary models: Ollama (local, default), Claude (cloud), and Azure OpenAI (cloud), chosen in the right-rail model picker or in Settings.
+- Summary models: Ollama (local, default) and Claude (cloud, routed through Azure), chosen in the right-rail model picker or in Settings.
 - Summary Templates: add your own instructions (typed, or uploaded as a `.md` file) on top of the built-in baseline rules. The baseline always applies, and a template only adds to it. Choose No template for baseline only.
 - Activity timeline (Windows, all optional and scrubbed). Captured alongside video and added to the summary prompt:
   - Window and app focus: which tool was focused, and for how long.
@@ -67,15 +66,16 @@ The workflow has three steps: Record, Review and redact, then Summary.
 
 ## Configuration
 
-Open Settings in the app. Everything persists locally, in browser `localStorage` in the app's user-data directory:
+Open Settings in the app. The summary model choice and the local-model fields below persist in browser `localStorage` in the app's user-data directory:
 
-- Summary model, and Anthropic API key (used only if Claude is selected).
-- Azure OpenAI endpoint, deployment name, and API key (used only if Azure is selected), plus a "Test connection" button that sends a tiny real test image to confirm the deployment accepts images.
+- Summary model.
 - Ollama URL, vision model, and text model.
 - Change threshold (0 to 10): how much a frame must change to be kept as a keyframe. Lower keeps more frames, higher
 keeps fewer.
 - Activity capture toggles (window, terminal, transcript, browser).
 - Client names to redact (comma-separated).
+
+Claude (routed through Azure) has no Settings UI by design: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, and `AZURE_OPENAI_KEY` are operator-configured environment variables, set once for the deployment rather than typed in by each technician.
 
 Generated notes are written to `%USERPROFILE%\Documents\CardonetCapture\`.
 
@@ -84,5 +84,5 @@ Generated notes are written to `%USERPROFILE%\Documents\CardonetCapture\`.
 
 - Windows first. The record, redact, and summarize core is portable, but the activity-timeline sources rely on PowerShell and Win32.
 - OCR language data (`eng.traineddata`) is bundled at install time (`npm install`'s postinstall step), so recording works offline from the first run.
-- API keys are encrypted at rest (Electron's `safeStorage`, backed by Windows DPAPI) in the app's user-data directory, never in `localStorage`.
+- The Azure OpenAI key lives only in the environment the app is launched with -- it is never written to `localStorage` or disk by the app itself.
 - Commands run inside an RDP or remote session are not captured individually. Only that the remote-session window was focused, and for how long, is recorded.

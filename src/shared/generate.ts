@@ -1,9 +1,12 @@
 // Shape of the `generate` IPC channel's request/response. The renderer sends
 // only non-secret data: masked+downscaled image data URLs, OCR text that has
-// already passed scrubText()/maskedOcrText(), model/URL settings (not keys),
-// and template *content* (not a key) from localStorage. API keys never leave
-// the main process -- see src/main/keys.ts.
-export type ProviderId = 'ollama' | 'claude' | 'azure' | 'echo';
+// already passed scrubText()/maskedOcrText(), Ollama URL/model settings (not
+// keys), and template *content* (not a key) from localStorage. All cloud
+// summaries ("claude") are routed through the org's Azure deployment --
+// endpoint/deployment/key are operator-configured via environment variables
+// and read directly in the main process (src/main/providers/index.ts),
+// never sent by the renderer.
+export type ProviderId = 'ollama' | 'claude' | 'echo';
 
 export interface GenerateFrame {
   timestamp: number;
@@ -28,7 +31,6 @@ export interface GenerateRequest {
   activityTimelineText: string;
   templateContent: string;
   ollama?: OllamaSettings;
-  azure?: AzureSettings;
 }
 
 export type GenerateResponse = string; // the finished work-note text

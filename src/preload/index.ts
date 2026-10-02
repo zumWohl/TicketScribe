@@ -10,8 +10,6 @@ const api = {
   eventsStop: (opts: EventsStopOptions): Promise<ActivityEvent[]> => ipcRenderer.invoke('events:stop', opts),
   getTranscriptSnippet: (): Promise<string> => ipcRenderer.invoke('events:get-transcript-snippet'),
   generate: (payload: GenerateRequest): Promise<string> => ipcRenderer.invoke('generate', payload),
-  setApiKey: (provider: string, key: string): Promise<void> => ipcRenderer.invoke('keys:set', provider, key),
-  hasApiKey: (provider: string): Promise<boolean> => ipcRenderer.invoke('keys:has', provider),
 };
 
 export type CardonetCaptureApi = typeof api;

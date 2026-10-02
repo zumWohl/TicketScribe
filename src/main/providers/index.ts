@@ -1,9 +1,7 @@
 import { nativeImage } from 'electron';
 import type { GenerateRequest } from '../../shared/generate';
 import { MODEL_IMAGE_MAX_DIMENSION } from '../../shared/image';
-import { getApiKey } from '../keys';
 import { runOllamaPipeline } from './ollama';
-import * as claude from './claude';
 import * as azure from './azure';
 import * as echo from './echo';
 
@@ -35,13 +33,14 @@ export async function generate(request: GenerateRequest): Promise<string> {
   }
 
   if (request.provider === 'claude') {
-    const apiKey = getApiKey('claude');
-    return claude.generate(apiKey || '', request.frames, request.activityTimelineText, request.templateContent);
-  }
-
-  if (request.provider === 'azure') {
-    const apiKey = getApiKey('azure');
-    return azure.generate(apiKey || '', request.azure, request.frames, request.activityTimelineText, request.templateContent);
+    // All cloud summaries are routed through the org's Azure deployment --
+    // endpoint/deployment/key are operator-configured via environment
+    // variables (set by IT, not the technician), never entered in Settings.
+    const settings = {
+      endpoint: process.env.AZURE_OPENAI_ENDPOINT || '',
+      deployment: process.env.AZURE_OPENAI_DEPLOYMENT || '',
+    };
+    return azure.generate(process.env.AZURE_OPENAI_KEY || '', settings, request.frames, request.activityTimelineText, request.templateContent);
   }
 
   // ollama

@@ -1,7 +1,10 @@
-// Phase 10 gate: the `generate` IPC channel reaches the real azure.ts module
-// (not mocked) for both of its own validation errors, and -- only when real
-// credentials are present in the environment -- produces one real summary
-// against a live Azure OpenAI deployment.
+// Gate: the `generate` IPC channel's 'claude' provider is routed through the
+// real azure.ts module (not mocked) -- endpoint/deployment/key now come from
+// AZURE_OPENAI_ENDPOINT/AZURE_OPENAI_DEPLOYMENT/AZURE_OPENAI_KEY environment
+// variables rather than Settings/safeStorage, so these tests launch the app
+// with a controlled env instead of driving Settings fields or calling
+// setApiKey. The last test only runs when real credentials are present, and
+// produces one real summary against a live Azure OpenAI deployment.
 import { test, expect, _electron as electron } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
@@ -17,15 +20,26 @@ function tempUserDataDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'cardonetcapture-e2e-userdata-'));
 }
 
-test('azure provider: missing endpoint/deployment surfaces its own validation error', async () => {
-  const app = await electron.launch({ args: [mainEntry, `--user-data-dir=${tempUserDataDir()}`] });
+// Strip the three Azure env vars from the launched app's environment so each
+// "missing config" test gets a clean slate regardless of the host shell.
+function envWithout(...keys: string[]): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  keys.forEach(k => delete env[k]);
+  return env;
+}
+
+test('claude provider (routed through Azure): missing endpoint/deployment surfaces its own validation error', async () => {
+  const app = await electron.launch({
+    args: [mainEntry, `--user-data-dir=${tempUserDataDir()}`],
+    env: envWithout('AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_DEPLOYMENT', 'AZURE_OPENAI_KEY'),
+  });
   const page = await app.firstWindow();
   await page.waitForSelector('body[data-stage="ready"]');
 
   const error = await page.evaluate((dataUrl) =>
     window.cardonetCapture
       .generate({
-        provider: 'azure',
+        provider: 'claude',
         frames: [{ timestamp: Date.now(), dataUrl, ocrText: '' }],
         activityTimelineText: '',
         templateContent: '',
@@ -37,19 +51,25 @@ test('azure provider: missing endpoint/deployment surfaces its own validation er
   await app.close();
 });
 
-test('azure provider: endpoint/deployment set but no key surfaces its own validation error', async () => {
-  const app = await electron.launch({ args: [mainEntry, `--user-data-dir=${tempUserDataDir()}`] });
+test('claude provider (routed through Azure): endpoint/deployment set but no key surfaces its own validation error', async () => {
+  const app = await electron.launch({
+    args: [mainEntry, `--user-data-dir=${tempUserDataDir()}`],
+    env: {
+      ...envWithout('AZURE_OPENAI_KEY'),
+      AZURE_OPENAI_ENDPOINT: 'unused-resource.openai.azure.com',
+      AZURE_OPENAI_DEPLOYMENT: 'unused-deployment',
+    },
+  });
   const page = await app.firstWindow();
   await page.waitForSelector('body[data-stage="ready"]');
 
   const error = await page.evaluate((dataUrl) =>
     window.cardonetCapture
       .generate({
-        provider: 'azure',
+        provider: 'claude',
         frames: [{ timestamp: Date.now(), dataUrl, ocrText: '' }],
         activityTimelineText: '',
         templateContent: '',
-        azure: { endpoint: 'unused-resource.openai.azure.com', deployment: 'unused-deployment' },
       })
       .then(() => null)
       .catch((e: Error) => e.message), TEST_FRAME_DATA_URL);
@@ -62,23 +82,21 @@ const { AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, AZURE_OPENAI_KEY } = pro
 const hasRealCredentials = Boolean(AZURE_OPENAI_ENDPOINT && AZURE_OPENAI_DEPLOYMENT && AZURE_OPENAI_KEY);
 
 (hasRealCredentials ? test : test.skip)(
-  'azure provider: real deployment produces a real summary (requires AZURE_OPENAI_ENDPOINT/DEPLOYMENT/KEY)',
+  'claude provider (routed through Azure): real deployment produces a real summary (requires AZURE_OPENAI_ENDPOINT/DEPLOYMENT/KEY)',
   async () => {
     const app = await electron.launch({ args: [mainEntry, `--user-data-dir=${tempUserDataDir()}`] });
     const page = await app.firstWindow();
     await page.waitForSelector('body[data-stage="ready"]');
 
-    await page.evaluate(key => window.cardonetCapture.setApiKey('azure', key), AZURE_OPENAI_KEY!);
     const summary = await page.evaluate(
-      ({ dataUrl, endpoint, deployment }) =>
+      ({ dataUrl }) =>
         window.cardonetCapture.generate({
-          provider: 'azure',
+          provider: 'claude',
           frames: [{ timestamp: Date.now(), dataUrl, ocrText: '' }],
           activityTimelineText: '',
           templateContent: '',
-          azure: { endpoint, deployment },
         }),
-      { dataUrl: TEST_FRAME_DATA_URL, endpoint: AZURE_OPENAI_ENDPOINT!, deployment: AZURE_OPENAI_DEPLOYMENT! },
+      { dataUrl: TEST_FRAME_DATA_URL },
     );
     expect(typeof summary).toBe('string');
     expect(summary.length).toBeGreaterThan(0);

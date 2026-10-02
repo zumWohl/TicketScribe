@@ -29,16 +29,16 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
 **Source layout:**
 - `src/main/` — main process. `index.ts` hosts the IPC handlers
   (`get-sources`, `save-summary`, `open-folder`, `events:start`,
-  `events:stop`, `events:get-transcript-snippet`, `generate`, `keys:set`,
-  `keys:has`) and loads the renderer (`ELECTRON_RENDERER_URL` in dev,
-  `out/renderer/index.html` when packaged). `events-capture.ts` is the
-  OS-level "activity" telemetry described below. `keys.ts` is the
-  `safeStorage`-encrypted API-key store (`<userData>/provider-keys.json`) —
-  `getApiKey` is main-process-internal; only `setApiKey`/`hasApiKey` are
-  exposed over IPC. `providers/` holds the summary-generation dispatcher
-  (`index.ts`) and the Ollama/Claude/echo implementations — **all provider
-  network calls happen here, in the main process**, so API keys and the
-  fetch itself never touch the renderer or its CSP.
+  `events:stop`, `events:get-transcript-snippet`, `generate`) and loads the
+  renderer (`ELECTRON_RENDERER_URL` in dev, `out/renderer/index.html` when
+  packaged). `events-capture.ts` is the OS-level "activity" telemetry
+  described below. `providers/` holds the summary-generation dispatcher
+  (`index.ts`) and the Ollama/Azure/echo implementations — **all provider
+  network calls happen here, in the main process**, so credentials and the
+  fetch itself never touch the renderer or its CSP. There is no API-key
+  store anymore: the cloud provider's credentials come from environment
+  variables read directly in `providers/index.ts` (see "Azure OpenAI"
+  below), not from `safeStorage` or any IPC channel.
 - `src/preload/index.ts` — the `contextBridge` bridge
   (`window.cardonetCapture.*`). Typed via `index.d.ts`'s global `Window`
   augmentation.
@@ -108,21 +108,23 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
 4. **Summary generation** (`src/main/providers/`) — dispatched by
    `generate()` in `providers/index.ts`, called from `App.tsx`'s
    `generateSummary()` via `window.cardonetCapture.generate(request)`. **All
-   provider calls (fetch, API keys) live in the main process** — the
+   provider calls (fetch, credentials) live in the main process** — the
    renderer only ever sends non-secret data: masked+downscaled image data
-   URLs, scrubbed OCR/timeline text, and model/URL settings (never keys).
-   **Ollama stays the default** (two-step shape: per-frame VLM description,
-   then a text-summary call). **Claude and Azure OpenAI are optional,
-   user-selected alternatives** (`summaryModel` setting) that each do the
-   whole thing in a single call: Claude via the Anthropic Messages API,
-   Azure via its unified `/openai/v1/chat/completions` route (deployment
-   name passed as `model`, **not** the deprecated
-   `services.ai.azure.com/models` route). **A hidden `echo` provider**
-   exists only for automated tests, reachable only when the main process
-   starts with `CARDONETCAPTURE_TEST_PROVIDER=echo` — the renderer's
-   `summaryModel` state typing only ever normalizes to
-   `'claude' | 'azure' | 'ollama'`, so there is no way to select it from the
-   UI; tests invoke it via
+   URLs, scrubbed OCR/timeline text, and Ollama URL/model settings (never
+   keys). **Ollama stays the default** (two-step shape: per-frame VLM
+   description, then a text-summary call). **`'claude'` is the optional,
+   user-selected cloud alternative** (`summaryModel` setting) — all cloud
+   summaries are routed through the org's Azure OpenAI deployment
+   (`providers/azure.ts`'s unified `/openai/v1/chat/completions` route,
+   deployment name passed as `model`, **not** the deprecated
+   `services.ai.azure.com/models` route), with the endpoint/deployment/key
+   read from environment variables rather than anything renderer-supplied —
+   see "Azure OpenAI" below. There is no direct-to-Anthropic code path.
+   **A hidden `echo` provider** exists only for automated tests, reachable
+   only when the main process starts with
+   `CARDONETCAPTURE_TEST_PROVIDER=echo` — the renderer's `summaryModel`
+   state typing only ever normalizes to `'claude' | 'ollama'`, so there is
+   no way to select it from the UI; tests invoke it via
    `window.cardonetCapture.generate({ provider: 'echo', ... })` directly.
    **All providers throw on failure — nothing silently falls back to a raw
    OCR dump presented as a finished summary.** On failure the processing
@@ -198,42 +200,48 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
 generation work fully without it.
 
 **Settings** persist to `localStorage` (same key names as before the port):
-Ollama fields, `azureEndpoint`/`azureDeployment` (non-secret), `summaryModel`
-(`ollama` default), three capture toggles, `transcriptEnabled`,
-`scrubClientNames`. **API keys never touch `localStorage`**: the Anthropic
-and Azure key input fields are plain transient React state that start blank
-on every launch (the real key can never be read back from `safeStorage`
-into the renderer), and `saveSettings()` only forwards a non-blank field to
-`setApiKey('claude' | 'azure', key)`, which writes to the
-`safeStorage`-encrypted main-process store. A blank field on save means
-"leave the existing key alone", not "clear it". `hasApiKey()` drives a
-"saved" label next to each field so the user isn't left guessing whether a
-key already exists.
+Ollama fields, `summaryModel` (`ollama` default), three capture toggles,
+`transcriptEnabled`, `scrubClientNames`. **There is no cloud-provider
+configuration in Settings at all** — no key fields, no endpoint/deployment
+fields, no "Test connection" button. Picking `'claude'` in the model picker
+only changes which `provider` value `generate()` sends; the actual
+endpoint/deployment/key are environment variables the app is launched with
+(see "Azure OpenAI" below), set once by whoever deploys the app, not typed
+in per-technician. This was a deliberate change from the key-management
+model Phases 2 and 10 originally built (`safeStorage`-encrypted,
+user-entered keys) — don't reintroduce a Settings UI or an IPC channel for
+cloud credentials without a deliberate decision to revert this.
 
 ## Azure OpenAI (`src/main/providers/azure.ts`)
 
-Third summary provider, added in Phase 10. Settings adds an "Azure OpenAI
-Configuration" card (endpoint, deployment name, API key) plus a **Test
-connection** button that calls the real `generate()` IPC path with a tiny
-1x1 test image, which is how "the deployment accepts images" gets validated,
-rather than an automatic call on every unrelated Settings save. Distinct
-error messages for 401 (bad key), 403 (access denied), 404 (deployment not
-found), 429 (rate limit), and both the 4xx-with-`error.code === 'content_filter'`
-and the 200-with-`finish_reason === 'content_filter'` shapes Azure uses to
-signal a content-filter rejection. Same throw-on-failure contract as every
-other provider.
+The backend for every cloud summary. Originally added in Phase 10 as a
+third, separately-selectable provider alongside Claude (via Anthropic's API
+directly) and Ollama; it's now the **only** cloud code path — selecting
+`'claude'` in the UI dispatches to `azure.generate()` (see
+`providers/index.ts`), there is no more direct-to-Anthropic call. Reads
+`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, and `AZURE_OPENAI_KEY`
+from `process.env` — set these before launching the app (or packaged exe)
+to enable the Claude option; if unset, selecting Claude throws azure.ts's
+own "endpoint/deployment not set" / "No Azure OpenAI API key set" errors.
+Distinct error messages for 401 (bad key), 403 (access denied), 404
+(deployment not found), 429 (rate limit), and both the
+4xx-with-`error.code === 'content_filter'` and the
+200-with-`finish_reason === 'content_filter'` shapes Azure uses to signal a
+content-filter rejection. Same throw-on-failure contract as every other
+provider.
 
 - **Key rotation**: Azure OpenAI resources issue two keys (`key1`/`key2`)
-  specifically so one can be rotated while the other stays live. Paste
-  either one into the API key field. CardonetCapture only ever stores
-  whichever key was last saved, so rotate by generating a new key in the
-  Azure portal, pasting it into Settings, saving, then regenerating the
-  old one once the new one round-trips the Test connection check.
+  specifically so one can be rotated while the other stays live. Rotate by
+  generating a new key in the Azure portal, updating the `AZURE_OPENAI_KEY`
+  environment variable wherever the app is deployed/launched from, and
+  relaunching, then regenerate the old key once the new one is confirmed
+  working.
 - **UK South provisioning**: when provisioning the Azure OpenAI resource,
   confirm the target region/deployment actually supports vision-capable
-  chat completions (e.g. a `gpt-4o`-family deployment). Not every region
-  offers every model, and a region that's fine for text-only deployments
-  may not have image support available.
+  chat completions (e.g. a `gpt-4o`-family deployment, or whichever model
+  family backs the "Claude" label). Not every region offers every model,
+  and a region that's fine for text-only deployments may not have image
+  support available.
 
 ## Tesseract (vendored, not CDN)
 
@@ -254,11 +262,12 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
   `get-sources` IPC channel.
 - `getUserMedia` constraints for desktop capture must use the `mandatory: {}`
   wrapper — top-level constraints silently fall back to webcam.
-- The base64 image sent to Ollama/Claude must have the
-  `data:image/…;base64,` prefix stripped: `dataUrl.split(',')[1]`. Azure
-  OpenAI's `image_url` content part is the opposite: it wants the **full**
-  data URL (prefix included), matching the OpenAI chat-completions image
-  format. Don't "fix" one to match the other.
+- The base64 image sent to Ollama must have the `data:image/…;base64,`
+  prefix stripped: `dataUrl.split(',')[1]`. Azure OpenAI's `image_url`
+  content part is the opposite: it wants the **full** data URL (prefix
+  included), matching the OpenAI chat-completions image format — this
+  applies to the `'claude'` provider too, since it's routed through
+  `azure.ts`. Don't "fix" one to match the other.
 - **Never silently substitute raw OCR text for a real summary.** All
   providers in `src/main/providers/` must throw on failure;
   `showGenerationFailure()` in `App.tsx` is the only path that surfaces OCR
@@ -292,14 +301,16 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
   `%USERPROFILE%\Documents\CardonetCapture\ticket-<id>-<timestamp>.txt` (no
   date/time in the note body or header). Image data still leaves the
   device when Claude is selected. Region masks *are* burned out of the
-  sent pixels, so masked regions never reach Anthropic — but any
+  sent pixels, so masked regions never reach Azure — but any
   **unmasked** pixels in a frame still leave the device with a Claude
   call. If a credential is visible on screen, mask it in the review stage
   (or use Ollama, whose exposure stays local).
-- API keys are `safeStorage`-encrypted in `<userData>/provider-keys.json`
-  (`src/main/keys.ts`) — never in `localStorage`, never readable from the
-  renderer.
+- Cloud credentials (`AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT`/
+  `AZURE_OPENAI_KEY`) are environment variables, read directly by
+  `providers/index.ts` — never in `localStorage`, never sent over IPC,
+  never readable from the renderer. There is no on-disk key store.
 - Do not upgrade `electron`, `better-sqlite3`, or `tesseract.js`.
+- Be extremely concise. Sacrifice grammar for the sake of concision.
 
 ## Migration status
 

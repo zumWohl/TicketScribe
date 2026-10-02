@@ -37,18 +37,10 @@ const MAX_ZOOM = 6;
 type Screen = 'work' | 'settings' | 'templates';
 type Stage = 'ready' | 'countdown' | 'recording' | 'review' | 'processing' | 'sent';
 type CaptureSource = 'window' | 'screen';
-type SummaryModel = 'claude' | 'azure' | 'ollama';
-
-// 1x1 pixel JPEG, used only to exercise a real round trip to the provider's
-// API when the user clicks "Test connection" in Settings -- proves the
-// endpoint/deployment/key combination actually accepts an image request,
-// without needing a real recording.
-const TEST_CONNECTION_FRAME_DATA_URL =
-  'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
+type SummaryModel = 'claude' | 'ollama';
 
 function summaryModelLabel(model: SummaryModel): string {
   if (model === 'claude') return 'Claude';
-  if (model === 'azure') return 'Azure OpenAI';
   return 'Ollama';
 }
 
@@ -134,17 +126,6 @@ export default function App() {
   const [vlmModel, setVlmModel] = useState(() => ls('vlmModel', 'llava'));
   const [textModel, setTextModel] = useState(() => ls('textModel', 'llama3'));
   const [threshold, setThreshold] = useState(() => ls('threshold', String(DEFAULT_THRESHOLD)));
-  // API keys are never persisted to localStorage (safeStorage only -- see
-  // src/main/keys.ts) and can't be read back from the main process, so these
-  // fields always start blank; `hasClaudeKey`/`hasAzureKey` tell the user
-  // whether a key is already saved without ever exposing it.
-  const [anthropicApiKey, setAnthropicApiKeyField] = useState('');
-  const [hasClaudeKey, setHasClaudeKey] = useState(false);
-  const [azureEndpoint, setAzureEndpoint] = useState(() => ls('azureEndpoint', ''));
-  const [azureDeployment, setAzureDeployment] = useState(() => ls('azureDeployment', ''));
-  const [azureApiKey, setAzureApiKeyField] = useState('');
-  const [hasAzureKey, setHasAzureKey] = useState(false);
-  const [azureTestStatus, setAzureTestStatus] = useState<{ state: 'idle' | 'checking' | 'ok' | 'error'; message?: string }>({ state: 'idle' });
   const [captureWindowEnabled, setCaptureWindowEnabled] = useState(() => ls('captureWindow', 'true') === 'true');
   const [captureTerminalEnabled, setCaptureTerminalEnabled] = useState(() => ls('captureTerminal', 'true') === 'true');
   const [captureBrowserEnabled, setCaptureBrowserEnabled] = useState(() => ls('captureBrowser', 'true') === 'true');
@@ -152,63 +133,26 @@ export default function App() {
   const [clientNames, setClientNames] = useState(() => ls('scrubClientNames', ''));
   const [summaryModel, setSummaryModelState] = useState<SummaryModel>(() => {
     const stored = ls('summaryModel', 'ollama');
-    return stored === 'claude' || stored === 'azure' ? stored : 'ollama';
+    return stored === 'claude' ? stored : 'ollama';
   });
   const [transcriptSnippetCopied, setTranscriptSnippetCopied] = useState(false);
-
-  useEffect(() => {
-    window.cardonetCapture.hasApiKey('claude').then(setHasClaudeKey);
-    window.cardonetCapture.hasApiKey('azure').then(setHasAzureKey);
-  }, []);
 
   const applySummaryModel = useCallback((id: SummaryModel) => {
     setLs('summaryModel', id);
     setSummaryModelState(id);
   }, []);
 
-  const saveSettings = useCallback(async () => {
+  const saveSettings = useCallback(() => {
     setLs('ollamaUrl', ollamaUrl.trim());
     setLs('vlmModel', vlmModel.trim());
     setLs('textModel', textModel.trim());
     setLs('threshold', threshold.trim());
-    setLs('azureEndpoint', azureEndpoint.trim());
-    setLs('azureDeployment', azureDeployment.trim());
     setLs('captureWindow', String(captureWindowEnabled));
     setLs('captureTerminal', String(captureTerminalEnabled));
     setLs('captureBrowser', String(captureBrowserEnabled));
     setLs('transcriptEnabled', String(transcriptEnabled));
     setLs('scrubClientNames', clientNames.trim());
-
-    // A blank key field means "leave the saved key alone" -- the field can
-    // never be pre-filled with the real key (safeStorage doesn't expose it
-    // back to the renderer), so blank must not be treated as "clear it".
-    if (anthropicApiKey.trim()) {
-      await window.cardonetCapture.setApiKey('claude', anthropicApiKey.trim());
-      setAnthropicApiKeyField('');
-      setHasClaudeKey(true);
-    }
-    if (azureApiKey.trim()) {
-      await window.cardonetCapture.setApiKey('azure', azureApiKey.trim());
-      setAzureApiKeyField('');
-      setHasAzureKey(true);
-    }
-  }, [ollamaUrl, vlmModel, textModel, threshold, azureEndpoint, azureDeployment, anthropicApiKey, azureApiKey, captureWindowEnabled, captureTerminalEnabled, captureBrowserEnabled, transcriptEnabled, clientNames]);
-
-  const testAzureConnection = useCallback(async () => {
-    setAzureTestStatus({ state: 'checking' });
-    try {
-      await window.cardonetCapture.generate({
-        provider: 'azure',
-        frames: [{ timestamp: Date.now(), dataUrl: TEST_CONNECTION_FRAME_DATA_URL, ocrText: '' }],
-        activityTimelineText: '',
-        templateContent: '',
-        azure: { endpoint: azureEndpoint, deployment: azureDeployment },
-      });
-      setAzureTestStatus({ state: 'ok' });
-    } catch (err) {
-      setAzureTestStatus({ state: 'error', message: (err as Error).message });
-    }
-  }, [azureEndpoint, azureDeployment]);
+  }, [ollamaUrl, vlmModel, textModel, threshold, captureWindowEnabled, captureTerminalEnabled, captureBrowserEnabled, transcriptEnabled, clientNames]);
 
   const copyTranscriptSnippet = useCallback(async () => {
     const snippet = await window.cardonetCapture.getTranscriptSnippet();
@@ -833,7 +777,6 @@ export default function App() {
         activityTimelineText: activityTimelineTextRef.current,
         templateContent: activeTemplateContentForGenerate(),
         ollama: summaryModel === 'ollama' ? { url: ls('ollamaUrl', 'http://localhost:11434'), vlmModel: ls('vlmModel', 'llava'), textModel: ls('textModel', 'llama3') } : undefined,
-        azure: summaryModel === 'azure' ? { endpoint: ls('azureEndpoint', ''), deployment: ls('azureDeployment', '') } : undefined,
       };
       const summary = await window.cardonetCapture.generate(request);
       procStep(2, 'done');
@@ -1200,19 +1143,16 @@ export default function App() {
                 <div className="rr-title">Summary Model</div>
                 <div className="model-list">
                   <button className={`model-item${summaryModel === 'claude' ? ' active' : ''}`} data-model="claude" onClick={() => applySummaryModel('claude')}>
-                    <span className="radio" /><div className="grow"><div className="name">Claude</div><div className="sub">Anthropic API</div></div><span className="tag default">Default</span>
-                  </button>
-                  <button className={`model-item${summaryModel === 'azure' ? ' active' : ''}`} data-model="azure" onClick={() => applySummaryModel('azure')}>
-                    <span className="radio" /><div className="grow"><div className="name">Azure OpenAI</div><div className="sub">Azure-hosted API</div></div><span className="tag cloud">Cloud</span>
+                    <span className="radio" /><div className="grow"><div className="name">Claude</div></div><span className="tag default">Default</span>
                   </button>
                   <button className="model-item is-disabled coming-soon" data-model="chatgpt" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-                    <span className="radio" /><div className="grow"><div className="name">ChatGPT</div><div className="sub">OpenAI API</div></div><span className="tag cloud">Cloud</span>
+                    <span className="radio" /><div className="grow"><div className="name">ChatGPT</div></div><span className="tag cloud">Cloud</span>
                   </button>
                   <button className="model-item is-disabled coming-soon" data-model="gemini" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-                    <span className="radio" /><div className="grow"><div className="name">Gemini</div><div className="sub">Google API</div></div><span className="tag cloud">Cloud</span>
+                    <span className="radio" /><div className="grow"><div className="name">Gemini</div></div><span className="tag cloud">Cloud</span>
                   </button>
                   <button className={`model-item${summaryModel === 'ollama' ? ' active' : ''}`} data-model="ollama" onClick={() => applySummaryModel('ollama')}>
-                    <span className="radio" /><div className="grow"><div className="name">Run locally with Ollama</div><div className="sub">On-device models</div></div><span className="tag private">Private</span>
+                    <span className="radio" /><div className="grow"><div className="name">Run locally with Ollama</div></div><span className="tag private">Private</span>
                   </button>
                 </div>
               </div>
@@ -1238,29 +1178,22 @@ export default function App() {
               <div className="settings-section-label">Summary Model Providers</div>
               <div className="model-list">
                 <button className={`model-item${summaryModel === 'claude' ? ' active' : ''}`} data-model="claude" onClick={() => applySummaryModel('claude')}>
-                  <span className="radio" /><div className="grow"><div className="name">Claude</div><div className="sub">Anthropic API</div></div><span className="tag default">Default</span>
-                </button>
-                <button className={`model-item${summaryModel === 'azure' ? ' active' : ''}`} data-model="azure" onClick={() => applySummaryModel('azure')}>
-                  <span className="radio" /><div className="grow"><div className="name">Azure OpenAI</div><div className="sub">Azure-hosted API</div></div><span className="tag cloud">Cloud</span>
+                  <span className="radio" /><div className="grow"><div className="name">Claude</div></div><span className="tag default">Default</span>
                 </button>
                 <button className="model-item is-disabled coming-soon" data-model="chatgpt" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-                  <span className="radio" /><div className="grow"><div className="name">ChatGPT</div><div className="sub">OpenAI API</div></div><span className="tag cloud">Cloud</span>
+                  <span className="radio" /><div className="grow"><div className="name">ChatGPT</div></div><span className="tag cloud">Cloud</span>
                 </button>
                 <button className="model-item is-disabled coming-soon" data-model="gemini" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-                  <span className="radio" /><div className="grow"><div className="name">Gemini</div><div className="sub">Google API</div></div><span className="tag cloud">Cloud</span>
+                  <span className="radio" /><div className="grow"><div className="name">Gemini</div></div><span className="tag cloud">Cloud</span>
                 </button>
                 <button className={`model-item${summaryModel === 'ollama' ? ' active' : ''}`} data-model="ollama" onClick={() => applySummaryModel('ollama')}>
-                  <span className="radio" /><div className="grow"><div className="name">Run locally with Ollama</div><div className="sub">On-device models</div></div><span className="tag private">Private</span>
+                  <span className="radio" /><div className="grow"><div className="name">Run locally with Ollama</div></div><span className="tag private">Private</span>
                 </button>
               </div>
 
               <div className="settings-section-label">Model Configuration</div>
               <div className="settings-card">
                 <div className="form-grid">
-                  <div className="form-group">
-                    <label htmlFor="s-anthropic-key">Anthropic API key <span className="hint">(Claude only){hasClaudeKey ? ' · saved' : ''}</span></label>
-                    <input id="s-anthropic-key" type="password" placeholder={hasClaudeKey ? '••••••••• (saved, leave blank to keep it)' : 'sk-ant-...'} value={anthropicApiKey} onChange={e => setAnthropicApiKeyField(e.target.value)} />
-                  </div>
                   <div className="form-group">
                     <label htmlFor="s-ollama-url">Ollama URL</label>
                     <input id="s-ollama-url" type="text" placeholder="http://localhost:11434" value={ollamaUrl} onChange={e => setOllamaUrl(e.target.value)} />
@@ -1277,31 +1210,6 @@ export default function App() {
                     <label htmlFor="s-threshold">Change threshold <span className="hint">(0 to 10)</span></label>
                     <input id="s-threshold" type="number" min={0} max={10} placeholder="5" value={threshold} onChange={e => setThreshold(e.target.value)} />
                   </div>
-                </div>
-              </div>
-
-              <div className="settings-section-label">Azure OpenAI Configuration</div>
-              <div className="settings-card">
-                <div className="form-grid">
-                  <div className="form-group">
-                    <label htmlFor="s-azure-endpoint">Endpoint <span className="hint">(e.g. my-resource.openai.azure.com)</span></label>
-                    <input id="s-azure-endpoint" type="text" placeholder="my-resource.openai.azure.com" value={azureEndpoint} onChange={e => setAzureEndpoint(e.target.value)} />
-                  </div>
-                  <div className="form-group">
-                    <label htmlFor="s-azure-deployment">Deployment name</label>
-                    <input id="s-azure-deployment" type="text" placeholder="gpt-4o-deploy" value={azureDeployment} onChange={e => setAzureDeployment(e.target.value)} />
-                  </div>
-                  <div className="form-group">
-                    <label htmlFor="s-azure-key">API key{hasAzureKey ? ' · saved' : ''}</label>
-                    <input id="s-azure-key" type="password" placeholder={hasAzureKey ? '••••••••• (saved, leave blank to keep it)' : 'key1 or key2 from the Azure portal'} value={azureApiKey} onChange={e => setAzureApiKeyField(e.target.value)} />
-                  </div>
-                </div>
-                <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <button className="btn btn-navy-ghost btn-sm" type="button" onClick={() => void testAzureConnection()} disabled={azureTestStatus.state === 'checking'}>
-                    {azureTestStatus.state === 'checking' ? 'Testing…' : 'Test connection'}
-                  </button>
-                  {azureTestStatus.state === 'ok' && <span style={{ color: 'var(--cn-green, #1a7f37)', fontSize: 12.5 }}>✓ Deployment accepted the test image</span>}
-                  {azureTestStatus.state === 'error' && <span style={{ color: 'var(--cn-red)', fontSize: 12.5 }}>✗ {azureTestStatus.message}</span>}
                 </div>
               </div>
 
@@ -1361,7 +1269,7 @@ export default function App() {
               </div>
 
               <div style={{ marginTop: 20 }}>
-                <button className="btn btn-pink btn-md" onClick={() => { void saveSettings().then(() => setScreen('work')); }}>Save settings</button>
+                <button className="btn btn-pink btn-md" onClick={() => { saveSettings(); setScreen('work'); }}>Save settings</button>
               </div>
             </div>
           </div>

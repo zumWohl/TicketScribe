@@ -1,9 +1,12 @@
-// Phase 10: Azure OpenAI as a third summary provider, alongside Claude and
-// Ollama. Uses the unified `/openai/v1/chat/completions` route (the
-// deployment name goes in the `model` field), NOT the deprecated
+// Azure OpenAI is the backend for every cloud summary -- the "Claude" option
+// in the UI is routed here by providers/index.ts, which reads the endpoint/
+// deployment/key from AZURE_OPENAI_ENDPOINT/AZURE_OPENAI_DEPLOYMENT/
+// AZURE_OPENAI_KEY (operator-configured environment variables, not Settings).
+// Uses the unified `/openai/v1/chat/completions` route (the deployment name
+// goes in the `model` field), NOT the deprecated
 // `services.ai.azure.com/models` route. Same throw-on-failure contract as
-// claude.ts/ollama.ts: src/main/providers/index.ts never falls back to a raw
-// OCR dump on error.
+// ollama.ts: src/main/providers/index.ts never falls back to a raw OCR dump
+// on error.
 import type { AzureSettings, GenerateFrame } from '../../shared/generate';
 import { summaryInstructions } from './rules';
 
@@ -26,9 +29,9 @@ export async function generate(
   templateContent: string,
 ): Promise<string> {
   if (!settings || !settings.endpoint.trim() || !settings.deployment.trim()) {
-    throw new Error('Azure OpenAI endpoint/deployment not set. Add them in Settings to use Azure.');
+    throw new Error('Azure OpenAI endpoint/deployment not set. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT.');
   }
-  if (!apiKey) throw new Error('No Azure OpenAI API key set. Add one in Settings to use Azure.');
+  if (!apiKey) throw new Error('No Azure OpenAI API key set. Set the AZURE_OPENAI_KEY environment variable.');
 
   const step = frames.length > MAX_IMAGES ? Math.ceil(frames.length / MAX_IMAGES) : 1;
   const sampledIndexes = frames.map((_, i) => i).filter(i => i % step === 0);
@@ -66,14 +69,14 @@ Work note:`,
       }),
     });
   } catch {
-    throw new Error('Could not reach Azure OpenAI. Check your internet connection and the endpoint in Settings.');
+    throw new Error('Could not reach Azure OpenAI. Check your internet connection and the AZURE_OPENAI_ENDPOINT value.');
   }
 
   if (!res.ok) {
     const body = await res.text();
-    if (res.status === 401) throw new Error('Azure OpenAI rejected the API key. Check it in Settings.');
+    if (res.status === 401) throw new Error('Azure OpenAI rejected the API key. Check the AZURE_OPENAI_KEY value.');
     if (res.status === 403) throw new Error('Azure OpenAI access denied for this key/resource. Check the resource permissions.');
-    if (res.status === 404) throw new Error('Azure OpenAI deployment not found. Check the deployment name in Settings.');
+    if (res.status === 404) throw new Error('Azure OpenAI deployment not found. Check the AZURE_OPENAI_DEPLOYMENT value.');
     if (res.status === 429) throw new Error('Azure OpenAI rate limit exceeded. Wait and try again.');
     let filtered = false;
     try {

@@ -51,10 +51,24 @@ describe('generate: image size guard (decision: proves downscale ran)', () => {
   });
 });
 
-describe('generate: azure dispatch', () => {
-  it('reaches azure.generate and surfaces its missing-settings error', async () => {
+describe('generate: claude dispatch (routed through Azure)', () => {
+  const ENV_KEYS = ['AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_DEPLOYMENT', 'AZURE_OPENAI_KEY'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
+    ENV_KEYS.forEach(k => delete process.env[k]);
+  });
+  afterEach(() => {
+    ENV_KEYS.forEach(k => {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    });
+  });
+
+  it('reaches azure.generate and surfaces its missing-settings error when env vars are unset', async () => {
     await expect(generate({
-      provider: 'azure',
+      provider: 'claude',
       frames: [],
       activityTimelineText: '',
       templateContent: '',
