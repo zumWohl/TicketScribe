@@ -12,7 +12,11 @@
 //   - a below-cap frame (400×300)          → not downscaled
 //   - an above-cap frame (2400×1350)        → downscaled to the 1280 long-edge cap
 const { ipcRenderer } = require('electron');
-const { maskAndDownscale, MODEL_IMAGE_MAX_DIMENSION } = require('../renderer/redact.js');
+// Phase 4: exercises the PORTED TypeScript module (src/renderer/src/lib/redact.ts),
+// not the legacy renderer/redact.js -- esbuild compiles it to a standalone
+// CJS file (see package.json's build:redact-cjs / pretest) so this require()
+// keeps working unchanged.
+const { maskAndDownscale, MODEL_IMAGE_MAX_DIMENSION } = require('./.build/redact.cjs');
 
 function loadImg(dataUrl) {
   return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = dataUrl; });
@@ -72,7 +76,10 @@ async function checkFrame(w, h) {
     const above = await checkFrame(2400, 1350);   // above cap → downscaled
     const results = [below, above];
     const pass = results.every(r => r.pass) && below.downscaled === false && above.downscaled === true;
-    const payload = { pass, cap: MODEL_IMAGE_MAX_DIMENSION, results };
+    // Phase 4 gate: prove this run actually loaded the NEW ported build, not
+    // a stale/legacy path, rather than trusting the require() line alone.
+    const resolvedModulePath = require.resolve('./.build/redact.cjs');
+    const payload = { pass, cap: MODEL_IMAGE_MAX_DIMENSION, results, resolvedModulePath };
     document.getElementById('out').textContent = JSON.stringify(payload, null, 2);
     ipcRenderer.send('mask-verify-result', payload);
   } catch (err) {

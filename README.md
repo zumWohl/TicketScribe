@@ -11,20 +11,25 @@ Hidden regions are removed from the pixels before anything is sent, and nothing 
 - A summary model. Pick one:
   - Ollama running locally (the default, fully on-device). Pull a vision model and a text model, for example `ollama pull llava` and `ollama pull llama3`.
   - An Anthropic API key for Claude (optional cloud alternative).
+  - An Azure OpenAI resource (endpoint, deployment name, API key) with a vision-capable deployment (optional cloud alternative).
 
 ## Install and run
 
 ```bash
-npm install          # install dependencies (run once)
+npm install          # install dependencies (run once) -- also vendors tesseract's OCR assets
 npm run rebuild      # rebuild better-sqlite3 for Electron's ABI (needed for browser-history capture)
-npm start            # launch the app
+npm start            # launch the app (hot reload)
 ```
 
 Other scripts:
 
 ```bash
-npm run dev          # launch with the Node inspector attached (port 9229)
+npm run dev          # launch with the Node inspector attached
+npm run dist         # build + package a Windows installer (dist/*.exe)
 npm test             # pixel-level check that redaction masking is destructive
+npm run typecheck    # TypeScript, no emit
+npm run test:unit    # vitest
+npm run test:e2e     # Playwright end-to-end tests
 ```
 
 `npm run rebuild` is only needed for the optional browser-history activity source. If you skip it, the app still runs and browser capture just does nothing.
@@ -35,7 +40,7 @@ The workflow has three steps: Record, Review and redact, then Summary.
 
 1. Record. Choose a capture source: a single window, or an entire screen (with a display picker when more than one monitor is connected). A keyframe is captured about every 1.5 seconds, and near-identical frames are dropped using a perceptual hash, so only frames that actually changed are kept. There is no frame cap. After 30 minutes you get a dismissable notice that the recording is long, and recording continues.
 2. Review and redact. Every keyframe is run through OCR (Tesseract) and scanned for sensitive values, which are pre-masked with pink boxes. You can draw new masks, drag, resize, or delete any box, zoom and pan to check small text, and drop whole frames. The preview always shows the masked render.
-3. Summary. The kept frames go to your chosen model and come back as a bullet-point work note. It is saved to `Documents/TicketScribe/`.
+3. Summary. The kept frames go to your chosen model and come back as a bullet-point work note. It is saved to `Documents/CardonetCapture/`.
 
 ### Sensitive-data redaction
 
@@ -47,11 +52,11 @@ The workflow has three steps: Record, Review and redact, then Summary.
 ### What leaves your device
 
 - Ollama: everything stays on your machine and network. Nothing is transmitted.
-- Claude: the redacted, downscaled keyframes are sent to the Anthropic API. Masked regions are already removed, but any unmasked pixels in a sent frame do leave the device, so mask anything sensitive during review, or use Ollama. The full-resolution originals are never sent, and the recording is cleared from memory once the summary is generated.
+- Claude and Azure OpenAI: the redacted, downscaled keyframes are sent to the provider's API. Masked regions are already removed, but any unmasked pixels in a sent frame do leave the device, so mask anything sensitive during review, or use Ollama. The full-resolution originals are never sent, and the recording is cleared from memory once the summary is generated.
 
 ## Features
 
-- Summary models: Ollama (local, default) and Claude (cloud), chosen in the right-rail model picker or in Settings.
+- Summary models: Ollama (local, default), Claude (cloud), and Azure OpenAI (cloud), chosen in the right-rail model picker or in Settings.
 - Summary Templates: add your own instructions (typed, or uploaded as a `.md` file) on top of the built-in baseline rules. The baseline always applies, and a template only adds to it. Choose No template for baseline only.
 - Activity timeline (Windows, all optional and scrubbed). Captured alongside video and added to the summary prompt:
   - Window and app focus: which tool was focused, and for how long.
@@ -65,18 +70,19 @@ The workflow has three steps: Record, Review and redact, then Summary.
 Open Settings in the app. Everything persists locally, in browser `localStorage` in the app's user-data directory:
 
 - Summary model, and Anthropic API key (used only if Claude is selected).
+- Azure OpenAI endpoint, deployment name, and API key (used only if Azure is selected), plus a "Test connection" button that sends a tiny real test image to confirm the deployment accepts images.
 - Ollama URL, vision model, and text model.
 - Change threshold (0 to 10): how much a frame must change to be kept as a keyframe. Lower keeps more frames, higher
 keeps fewer.
 - Activity capture toggles (window, terminal, transcript, browser).
 - Client names to redact (comma-separated).
 
-Generated notes are written to `%USERPROFILE%\Documents\TicketScribe\`.
+Generated notes are written to `%USERPROFILE%\Documents\CardonetCapture\`.
 
 
 ## Notes and limitations
 
 - Windows first. The record, redact, and summarize core is portable, but the activity-timeline sources rely on PowerShell and Win32.
-- OCR language data (`eng.traineddata`) is fetched on first use, so the first recording after install needs network access for that download.
-- API key storage currently uses `localStorage`, in the app's user-data directory, outside the project and git. Treat the machine as trusted accordingly.
+- OCR language data (`eng.traineddata`) is bundled at install time (`npm install`'s postinstall step), so recording works offline from the first run.
+- API keys are encrypted at rest (Electron's `safeStorage`, backed by Windows DPAPI) in the app's user-data directory, never in `localStorage`.
 - Commands run inside an RDP or remote session are not captured individually. Only that the remote-session window was focused, and for how long, is recorded.

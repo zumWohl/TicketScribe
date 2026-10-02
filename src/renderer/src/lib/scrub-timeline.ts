@@ -1,9 +1,10 @@
-// Text-scrubbing pass, applied to OCR text at the source (see app.js) and to
-// the assembled activity timeline before any model call -- cloud (Claude) or
-// local (Ollama). Window titles and admin-portal URLs routinely carry client
-// names and tenant/object IDs; OCR'd screen text routinely carries literal
-// credentials someone just typed. This is an MSP handling client data, so
-// this runs before generation rather than being an afterthought.
+// Text-scrubbing pass, applied to OCR text at the source (see app.js/app.tsx)
+// and to the assembled activity timeline before any model call -- cloud
+// (Claude) or local (Ollama). Window titles and admin-portal URLs routinely
+// carry client names and tenant/object IDs; OCR'd screen text routinely
+// carries literal credentials someone just typed. This is an MSP handling
+// client data, so this runs before generation rather than being an
+// afterthought.
 //
 // Note the real limit of this pass: it only scrubs TEXT. A screenshot sent
 // to a vision model still shows the credential as pixels -- this cannot
@@ -11,6 +12,9 @@
 // typed text (OCR context strings, activity-timeline fields, the raw-OCR
 // fallback text). For Ollama that residual exposure stays on-device; for
 // Claude, the actual image bytes still leave the device regardless.
+//
+// 1:1 port of renderer/scrub-timeline.js -- types only, no logic change.
+import type { ActivityEvent, ActivityEventDetail } from '../../../shared/events';
 
 const PASSWORD_RE = /\b(pass(?:word)?|pwd|pin|secret)\s*[:=]\s*(\S{3,})/gi;
 const USERNAME_RE = /\b(user(?:name)?|login)\s*[:=]\s*(\S{3,})/gi;
@@ -18,12 +22,12 @@ const API_KEY_RE = /\b(?:sk|pk)-[A-Za-z0-9]{16,}\b|\bAKIA[0-9A-Z]{16}\b|\bapi[_-
 const GUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
-function getClientNames() {
+function getClientNames(): string[] {
   const raw = localStorage.getItem('scrubClientNames') || '';
   return raw.split(',').map(s => s.trim()).filter(Boolean);
 }
 
-function scrubText(text) {
+export function scrubText(text: string): string {
   if (!text) return text;
   let out = text
     .replace(PASSWORD_RE, (_m, keyword) => `${keyword}: [redacted]`)
@@ -38,17 +42,18 @@ function scrubText(text) {
   return out;
 }
 
-const TEXT_FIELDS = ['windowTitle', 'url', 'title', 'command', 'content'];
+const TEXT_FIELDS = ['windowTitle', 'url', 'title', 'command', 'content'] as const;
 
-function scrubEvent(event) {
-  const detail = { ...event.detail };
+export function scrubEvent(event: ActivityEvent): ActivityEvent {
+  const detail: Record<string, unknown> = { ...event.detail };
   for (const field of TEXT_FIELDS) {
-    if (detail[field]) detail[field] = scrubText(detail[field]);
+    const value = detail[field];
+    if (typeof value === 'string' && value) detail[field] = scrubText(value);
   }
-  return { ...event, detail };
+  return { ...event, detail: detail as unknown as ActivityEventDetail };
 }
 
-function scrubEvents(events) {
+export function scrubEvents(events: ActivityEvent[] | null | undefined): ActivityEvent[] {
   return (events || []).map(scrubEvent);
 }
 
@@ -78,17 +83,17 @@ const LABEL_CONT_RE = /^(name|names|credential|credentials|key|keys|token|tokens
 // A token that is nothing but separator punctuation between a label and its
 // value. A run ("::", ":=", "->", "--") collapses to a single separator.
 const SEPARATOR_TOKEN_RE = /^[:=\-–—|>»]+$/;
-function isSeparatorToken(text) { return SEPARATOR_TOKEN_RE.test((text || '').trim()); }
+function isSeparatorToken(text: string): boolean { return SEPARATOR_TOKEN_RE.test((text || '').trim()); }
 
 // PASSWORD_RE/USERNAME_RE/API_KEY_RE/GUID_RE are shared /g regexes also used
 // by scrubText()'s .replace() calls -- .test() on a /g regex is stateful
 // (lastIndex), so it must be reset before every call or matches get skipped.
-function testGlobal(re, str) {
+function testGlobal(re: RegExp, str: string): boolean {
   re.lastIndex = 0;
   return re.test(str);
 }
 
-function isSensitiveWord(text) {
+function isSensitiveWord(text: string): boolean {
   if (!text) return false;
   if (testGlobal(API_KEY_RE, text)) return true;
   if (testGlobal(GUID_RE, text)) return true;
@@ -97,9 +102,21 @@ function isSensitiveWord(text) {
   return getClientNames().some(name => name && lower.includes(name.toLowerCase()));
 }
 
+export interface OcrWordBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface OcrWord {
+  text: string;
+  bbox: OcrWordBox;
+}
+
 // words: [{ text, bbox }] from runOCR()'s Tesseract word boxes (see app.js).
 // Returns the subset that should be masked before the frame is downscaled.
-function findSensitiveWords(words) {
+export function findSensitiveWords(words: OcrWord[] | null | undefined): OcrWord[] {
   if (!words || words.length === 0) return [];
   const flags = new Array(words.length).fill(false);
   // 1) Self-contained sensitive tokens flag themselves, regardless of any label.
@@ -118,5 +135,3 @@ function findSensitiveWords(words) {
   }
   return words.filter((_, i) => flags[i]);
 }
-
-module.exports = { scrubText, scrubEvent, scrubEvents, findSensitiveWords };

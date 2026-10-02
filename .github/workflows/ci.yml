@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Mask-verify (destructive redaction test, against ported redact.ts)
+        run: npm test
+
+      - name: OCR verify (legacy loading path)
+        run: npm run test:ocr
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Build renderer/main/preload (Vite)
+        run: npm run build:vite
+
+      - name: OCR verify (vendored assets, packaged/offline)
+        run: npm run test:ocr:offline
+
+      - name: OCR verify (vendored assets, Vite dev server)
+        run: npm run test:ocr:dev
+
+      - name: Package (--dir, unpacked)
+        run: npx electron-builder --dir
+
+      - name: Playwright e2e (packaged app smoke/node_modules/full-pipeline + React renderer smoke/visual-diff/full pipeline + provider IPC)
+        # legacy-baseline.spec.ts is excluded by playwright.config.ts's
+        # testIgnore -- it did its one-time job creating e2e/baseline/*.png
+        # at Gate 0 and must never run again (it unconditionally regenerates
+        # those frozen images as a side effect).
+        run: npx playwright test
+
+      - name: Upload --dir build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-unpacked
+          path: dist/win-unpacked

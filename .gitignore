@@ -3,3 +3,9 @@ dist/
 out/
 .DS_Store
 *.log
+test-results/
+playwright-report/
+*.tsbuildinfo
+e2e/*-actual/
+test/.build/
+src/renderer/public/vendor/

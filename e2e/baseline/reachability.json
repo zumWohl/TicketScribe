@@ -1,0 +1,12 @@
+{
+  "01-ready-window-source": true,
+  "02-ready-screen-source": true,
+  "screen-picker-shown-multi-display": false,
+  "03-templates": true,
+  "04-settings": true,
+  "05-ready-again": true,
+  "06-countdown": true,
+  "07-recording": true,
+  "stage-after-stop": "review",
+  "08-review": true
+}

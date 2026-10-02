@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' data:"
+    />
+    <title>OCR verify (vendored assets)</title>
+  </head>
+  <body>
+    <pre id="out">running…</pre>
+    <script type="module" src="./src/ocr-verify.ts"></script>
+  </body>
+</html>

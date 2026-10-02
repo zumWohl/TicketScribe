@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>OCR verify</title></head>
+<body>
+<pre id="out">running…</pre>
+<script>
+// Phase 4 baseline: proves the CURRENT (legacy-path) tesseract.js loading
+// mechanism actually produces usable OCR output -- renders a known string on
+// a canvas with a standard font and asserts the recognized text/words aren't
+// empty and the expected text is found. This is the exact loading path
+// app.js uses today (forced browser build + worker/core paths via
+// require.resolve); Phase 5 changes HOW those paths are derived (vendored,
+// relative-to-document URLs) but this harness itself is what Phase 5's gate
+// re-runs to prove that didn't regress OCR.
+const { ipcRenderer } = require('electron');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const { createWorker } = require('tesseract.js/dist/tesseract.min.js');
+const TESSERACT_WORKER_PATH = pathToFileURL(path.join(path.dirname(require.resolve('tesseract.js/dist/tesseract.min.js')), 'worker.min.js')).href;
+const TESSERACT_CORE_PATH = pathToFileURL(path.dirname(require.resolve('tesseract.js-core/tesseract-core.wasm.js'))).href + '/';
+
+const EXPECTED_TEXT = 'CARDONETCAPTURE OCR VERIFY 12345';
+
+function makeTextCanvas(text) {
+  const font = '48px Arial, sans-serif';
+  const measure = document.createElement('canvas').getContext('2d');
+  measure.font = font;
+  const textWidth = measure.measureText(text).width;
+
+  const c = document.createElement('canvas');
+  c.width = Math.ceil(textWidth) + 60;
+  c.height = 160;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#000000';
+  ctx.font = font;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 30, c.height / 2);
+  return c;
+}
+
+(async () => {
+  try {
+    const canvas = makeTextCanvas(EXPECTED_TEXT);
+    const worker = await createWorker('eng', 1, {
+      workerPath: TESSERACT_WORKER_PATH,
+      corePath: TESSERACT_CORE_PATH,
+      logger: () => {},
+    });
+    const { data } = await worker.recognize(canvas);
+    await worker.terminate();
+
+    const text = (data.text || '').replace(/\s+/g, ' ').trim();
+    const words = (data.blocks || [])
+      .flatMap(b => b.paragraphs || [])
+      .flatMap(p => p.lines || [])
+      .flatMap(l => l.words || [])
+      .filter(w => w.text && w.text.trim());
+
+    // Fuzzy match: OCR of a clean rendered string should be near-exact, but
+    // don't demand byte-perfect (e.g. punctuation/spacing quirks).
+    const normalizedExpected = EXPECTED_TEXT.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    const normalizedActual = text.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    const foundExpectedText = normalizedActual.includes(normalizedExpected);
+
+    const pass = words.length > 0 && foundExpectedText;
+    const payload = { pass, text, wordCount: words.length, foundExpectedText, expected: EXPECTED_TEXT };
+    document.getElementById('out').textContent = JSON.stringify(payload, null, 2);
+    ipcRenderer.send('ocr-verify-result', payload);
+  } catch (err) {
+    ipcRenderer.send('ocr-verify-result', { pass: false, error: String((err && err.stack) || err) });
+  }
+})();
+</script>
+</body>
+</html>
