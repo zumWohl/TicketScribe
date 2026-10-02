@@ -195,11 +195,17 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
    triggering a React re-render on `mouseup`). The preview `<canvas>` shows
    a **destructively masked render**. At generation, `maskAndDownscale()`
    copies the full-res canvas, `fillRect`s every mask on that full-res
-   copy, and **only then** downscales. Verified by `test/mask-verify.html`
-   (`npm test`), which loads a small CJS build of `lib/redact.ts`
-   (`npm run build:redact-cjs`, auto-run via `pretest`) and reads pixels
-   inside a masked region of the final dataUrl on both a below-cap and an
-   above-cap (downscaled) frame. Each `Keyframe` also tracks `reviewed`
+   copy, and **only then** downscales. Verified by `npm test`
+   (`src/renderer/src/lib/redact.test.ts`), a Vitest test that imports
+   `redact.ts` directly (no separate build step) under
+   `// @vitest-environment jsdom` -- jsdom's `HTMLCanvasElement.getContext`
+   delegates to the `canvas` package (node-canvas, real Cairo-backed
+   rendering) when it's installed, so this is genuine pixel rendering, not a
+   stub. It reads pixels inside a masked region of the final dataUrl on both
+   a below-cap and an above-cap (downscaled) frame, reading the output back
+   via `canvas`'s own `loadImage()`/`createCanvas()` rather than jsdom's
+   `Image`, which sidesteps jsdom's separate (and separately finicky)
+   image-decoding integration. Each `Keyframe` also tracks `reviewed`
    (set when it's been the active frame in the review filmstrip, via
    `goToFrame()` or the initial frame `analyzeFrames()` lands on). Clicking
    **"Generate summary »" does not send anything by itself** — it opens a
@@ -304,7 +310,7 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
   → `fillRect` them on a full-res copy of the canvas → _then_ downscale.
   Never mask after downscaling, never rely on a floating DOM overlay to
   hide pixels. Keep `lib/redact.ts` as the single shared implementation and
-  keep `npm test` (`test/mask-verify.html`) green.
+  keep `npm test` (`src/renderer/src/lib/redact.test.ts`) green.
 - Any raw-OCR/fallback text path must be routed through the same redaction
   gate (`maskedOcrText()` drops masked words, then `scrubText`).
 - Keyframe `canvas` elements are kept in a ref through the review stage;

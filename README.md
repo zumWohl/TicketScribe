@@ -55,7 +55,7 @@ Each kept keyframe goes through the same pipeline before it's eligible to be sen
 
 Masks are stored in full-resolution canvas coordinates, so they stay aligned with the underlying frame across zoom, pan, and window resizing — what you draw at any zoom level lands on the right pixels when it's burned in.
 
-**What this doesn't cover:** auto-detection is best-effort pattern matching over OCR output, not a guarantee — it can miss sensitive text that doesn't match its patterns, that OCR misread, or that's rendered as an image rather than selectable text. That's why the review stage exists: you're expected to look at every frame, not just trust the pink boxes. `npm test` (`test/mask-verify.html`) is an automated pixel-level check that redaction is actually destructive (the masked region's original pixels are gone from the final output, at both full-res and downscaled sizes) — it does not and cannot verify that auto-detection _found_ everything, only that whatever was masked is truly gone.
+**What this doesn't cover:** auto-detection is best-effort pattern matching over OCR output, not a guarantee — it can miss sensitive text that doesn't match its patterns, that OCR misread, or that's rendered as an image rather than selectable text. That's why the review stage exists: you're expected to look at every frame, not just trust the pink boxes. `npm test` is an automated pixel-level check that redaction is actually destructive (the masked region's original pixels are gone from the final output, at both full-res and downscaled sizes) — it does not and cannot verify that auto-detection _found_ everything, only that whatever was masked is truly gone.
 
 ### What leaves your device
 
