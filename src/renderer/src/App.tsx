@@ -58,6 +58,7 @@ interface Keyframe {
   ocrWords: OcrWord[];
   masks: Mask[];
   removed: boolean;
+  reviewed: boolean; // true once the user has viewed this frame in the review stage
 }
 
 interface Interaction {
@@ -297,6 +298,7 @@ export default function App() {
   }, []);
   const [recordingOverlayVisible, setRecordingOverlayVisible] = useState(false);
   const [durationModalVisible, setDurationModalVisible] = useState(false);
+  const [sendConfirmVisible, setSendConfirmVisible] = useState(false);
   const [countdownN, setCountdownN] = useState(3);
 
   const populateWindows = useCallback(async () => {
@@ -389,6 +391,7 @@ export default function App() {
         ocrWords: [],
         masks: [],
         removed: false,
+        reviewed: false,
       });
       setFrameCount(keyframesRef.current.length);
     }
@@ -516,6 +519,10 @@ export default function App() {
     return keyframesRef.current.reduce((n, kf) => n + (kf.removed ? 0 : kf.masks.length), 0);
   }, []);
 
+  const unreviewedFrameCount = useCallback(() => {
+    return keyframesRef.current.reduce((n, kf) => n + (!kf.removed && !kf.reviewed ? 1 : 0), 0);
+  }, []);
+
   const fitScale = useCallback((kf: Keyframe): number => {
     const stage_ = frameStageRef.current;
     if (!stage_) return 1;
@@ -573,8 +580,10 @@ export default function App() {
       kfs[i].ocrWords = words;
       kfs[i].masks = autoMasksFor(kfs[i]);
     }
+    if (kfs[0]) kfs[0].reviewed = true;
     setReviewReady(true);
     setReviewIndex(0);
+    setSendConfirmVisible(false);
     resetZoom();
     bumpReview();
   }, [resetZoom, bumpReview]);
@@ -790,6 +799,8 @@ export default function App() {
 
   const goToFrame = useCallback(
     (i: number) => {
+      const kf = keyframesRef.current[i];
+      if (kf) kf.reviewed = true;
       setReviewIndex(i);
       resetZoom();
     },
@@ -1452,7 +1463,7 @@ export default function App() {
                   <button
                     className="btn btn-pink btn-md"
                     onClick={() => {
-                      void generateSummary();
+                      setSendConfirmVisible(true);
                     }}
                   >
                     Generate summary »
@@ -2060,6 +2071,41 @@ export default function App() {
           <div className="modal-actions">
             <button className="btn btn-pink btn-sm" onClick={() => setDurationModalVisible(false)}>
               Got it, keep recording
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className={`modal-scrim${sendConfirmVisible ? '' : ' hidden'}`}>
+        <div className="modal-card">
+          <div className="badge">🔒</div>
+          <h3>Confirm redaction before sending</h3>
+          <p>
+            {totalMaskCount()} region{totalMaskCount() === 1 ? '' : 's'} auto-masked across{' '}
+            {keyframesRef.current.filter(kf => !kf.removed).length} frame
+            {keyframesRef.current.filter(kf => !kf.removed).length === 1 ? '' : 's'}.
+            {unreviewedFrameCount() > 0 && (
+              <>
+                {' '}
+                <b>
+                  {unreviewedFrameCount()} frame{unreviewedFrameCount() === 1 ? '' : 's'} not yet reviewed.
+                </b>{' '}
+                Automatic detection is best-effort, not a guarantee -- review every frame before sending.
+              </>
+            )}
+          </p>
+          <div className="modal-actions">
+            <button className="btn btn-ghost btn-sm" onClick={() => setSendConfirmVisible(false)}>
+              Go back to review
+            </button>
+            <button
+              className="btn btn-pink btn-sm"
+              onClick={() => {
+                setSendConfirmVisible(false);
+                void generateSummary();
+              }}
+            >
+              Send to {summaryModelLabel(summaryModel)}
             </button>
           </div>
         </div>

@@ -199,7 +199,16 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
    (`npm test`), which loads a small CJS build of `lib/redact.ts`
    (`npm run build:redact-cjs`, auto-run via `pretest`) and reads pixels
    inside a masked region of the final dataUrl on both a below-cap and an
-   above-cap (downscaled) frame.
+   above-cap (downscaled) frame. Each `Keyframe` also tracks `reviewed`
+   (set when it's been the active frame in the review filmstrip, via
+   `goToFrame()` or the initial frame `analyzeFrames()` lands on). Clicking
+   **"Generate summary »" does not send anything by itself** — it opens a
+   confirmation modal (`sendConfirmVisible`) stating the auto-masked region
+   count and, if any live frame hasn't been viewed yet, how many are still
+   unreviewed. Only the modal's "Send to `<model>`" button actually calls
+   `generateSummary()`; "Go back to review" just closes it. Covered by
+   `e2e/phase-review-send-gate.spec.ts` (drives the real buttons, not
+   `window.cardonetCapture.generate` directly).
 
 7. **State machine** — `screen` (`work`/`settings`/`templates`) and, within
    work, `stage` (`ready → countdown → recording → review → processing →
