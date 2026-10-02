@@ -1,8 +1,7 @@
-// Pure, DOM-canvas redaction primitives shared by the app (app.tsx, once
-// Phase 6a ports it) and the pixel-level verification test (test/mask-verify.html,
-// repointed at this module in Phase 4). Kept in one module so the
-// security-critical masking path that ships is the exact same code the test
-// exercises.
+// Pure, DOM-canvas redaction primitives shared by the app (App.tsx) and the
+// pixel-level verification test (redact.test.ts, imports this module
+// directly). Kept in one module so the security-critical masking path that
+// ships is the exact same code the test exercises.
 //
 // SECURITY CONTRACT: masks are always expressed in FULL-RESOLUTION source
 // canvas pixel coordinates. maskAndDownscale() copies the full-res canvas,
@@ -64,7 +63,11 @@ export interface MaskAndDownscaleOptions {
 
 // The one true send-path: mask destructively on a full-res copy, THEN
 // downscale. Returns a dataUrl whose masked regions contain only fill pixels.
-export function maskAndDownscale(sourceCanvas: HTMLCanvasElement, masks: Mask[], opts?: MaskAndDownscaleOptions): string {
+export function maskAndDownscale(
+  sourceCanvas: HTMLCanvasElement,
+  masks: Mask[],
+  opts?: MaskAndDownscaleOptions,
+): string {
   const o = opts || {};
   const work = document.createElement('canvas');
   work.width = sourceCanvas.width;

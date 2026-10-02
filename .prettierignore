@@ -1,0 +1,12 @@
+node_modules
+out
+dist
+test/.build
+src/renderer/public/vendor
+.agents
+.claude/skills
+package-lock.json
+*.tsbuildinfo
+e2e/phase1-actual
+e2e/phase6a-actual
+e2e/baseline

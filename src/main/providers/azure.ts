@@ -12,9 +12,22 @@ import { summaryInstructions } from './rules';
 
 const MAX_IMAGES = 20;
 
-interface MessageTextPart { type: 'text'; text: string }
-interface MessageImagePart { type: 'image_url'; image_url: { url: string } }
+interface MessageTextPart {
+  type: 'text';
+  text: string;
+}
+interface MessageImagePart {
+  type: 'image_url';
+  image_url: { url: string };
+}
 type MessagePart = MessageTextPart | MessageImagePart;
+
+interface AzureErrorBody {
+  error?: { code?: string; message?: string };
+}
+interface AzureChatCompletion {
+  choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
+}
 
 function normalizeEndpoint(endpoint: string): string {
   const trimmed = endpoint.trim().replace(/\/+$/, '');
@@ -69,18 +82,22 @@ Work note:`,
       }),
     });
   } catch {
-    throw new Error('Could not reach Azure OpenAI. Check your internet connection and the AZURE_OPENAI_ENDPOINT value.');
+    throw new Error(
+      'Could not reach Azure OpenAI. Check your internet connection and the AZURE_OPENAI_ENDPOINT value.',
+    );
   }
 
   if (!res.ok) {
     const body = await res.text();
     if (res.status === 401) throw new Error('Azure OpenAI rejected the API key. Check the AZURE_OPENAI_KEY value.');
-    if (res.status === 403) throw new Error('Azure OpenAI access denied for this key/resource. Check the resource permissions.');
-    if (res.status === 404) throw new Error('Azure OpenAI deployment not found. Check the AZURE_OPENAI_DEPLOYMENT value.');
+    if (res.status === 403)
+      throw new Error('Azure OpenAI access denied for this key/resource. Check the resource permissions.');
+    if (res.status === 404)
+      throw new Error('Azure OpenAI deployment not found. Check the AZURE_OPENAI_DEPLOYMENT value.');
     if (res.status === 429) throw new Error('Azure OpenAI rate limit exceeded. Wait and try again.');
     let filtered = false;
     try {
-      filtered = JSON.parse(body)?.error?.code === 'content_filter';
+      filtered = (JSON.parse(body) as AzureErrorBody)?.error?.code === 'content_filter';
     } catch {
       /* not JSON */
     }
@@ -88,7 +105,7 @@ Work note:`,
     throw new Error(`Azure OpenAI ${res.status}: ${body}`);
   }
 
-  const data = await res.json();
+  const data = (await res.json()) as AzureChatCompletion;
   const choice = (data.choices || [])[0];
   if (choice?.finish_reason === 'content_filter') {
     throw new Error('Azure OpenAI declined to generate this summary (content filter).');

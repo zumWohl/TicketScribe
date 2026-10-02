@@ -67,22 +67,24 @@ function createWorkerWithTimeout(): Promise<TesseractWorker> {
       // around the call that triggered it. This turns that into a normal,
       // swallowable rejection instead.
       errorHandler: () => {},
-    }).then(w => {
-      if (settled) {
-        // Timed out already; this worker arrived late. Don't leak it, but
-        // don't use it either -- the caller already moved on.
-        w.terminate().catch(() => {});
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      resolve(w);
-    }).catch(err => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(err);
-    });
+    })
+      .then(w => {
+        if (settled) {
+          // Timed out already; this worker arrived late. Don't leak it, but
+          // don't use it either -- the caller already moved on.
+          w.terminate().catch(() => {});
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(w);
+      })
+      .catch((err: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
   });
 }
 
@@ -96,7 +98,9 @@ export function ensureOCRWorker(): Promise<TesseractWorker> {
     // A failed/timed-out attempt must not be cached forever -- the next
     // call (whether a retry from runOCR or a later keyframe) needs to start
     // a genuinely fresh attempt, not keep returning the same dead promise.
-    ocrWorkerPromise.catch(() => { ocrWorkerPromise = null; });
+    ocrWorkerPromise.catch(() => {
+      ocrWorkerPromise = null;
+    });
   }
   return ocrWorkerPromise;
 }

@@ -6,10 +6,10 @@
 // Highly imperative sections (capture, review/redact canvas) keep using
 // refs for direct DOM/canvas access rather than being redesigned into
 // "idiomatic React", matching the plan's port-not-redesign instruction.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import logoUrl from './assets/cardonet-logo.png';
 import './styles.css';
-import { aHash, hamming, type AHash } from './lib/hash';
+import { aHash, clampThreshold, shouldKeepAsKeyframe, type AHash } from './lib/hash';
 import { buildActivityTimelineText } from './lib/activity';
 import {
   DEFAULT_THRESHOLD,
@@ -26,7 +26,7 @@ import { runOCR, ensureOCRWorker, type OcrWord } from './lib/ocr';
 import { maskAndDownscale, type Mask } from './lib/redact';
 import { scrubText, scrubEvents, findSensitiveWords } from './lib/scrub-timeline';
 import type { ActivityEvent } from '../../shared/events';
-import type { GenerateRequest, ProviderId } from '../../shared/generate';
+import type { GenerateRequest } from '../../shared/generate';
 
 const CAPTURE_INTERVAL_MS = 1500;
 const MASK_PADDING_PX = 3;
@@ -58,6 +58,7 @@ interface Keyframe {
   ocrWords: OcrWord[];
   masks: Mask[];
   removed: boolean;
+  reviewed: boolean; // true once the user has viewed this frame in the review stage
 }
 
 interface Interaction {
@@ -78,7 +79,7 @@ interface DraftRect {
 }
 
 function escapeHtml(str: string): string {
-  return String(str).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+  return String(str).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string);
 }
 
 // Compute the OCR text actually sent for a frame: any word whose bbox falls
@@ -92,7 +93,12 @@ function maskedOcrText(kf: Keyframe): string {
     const cy = (w.bbox.y0 + w.bbox.y1) / 2;
     return !kf.masks.some(m => cx >= m.x && cx <= m.x + m.w && cy >= m.y && cy <= m.y + m.h);
   });
-  const text = kept.map(w => w.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 600);
+  const text = kept
+    .map(w => w.text)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 600);
   return scrubText(text);
 }
 
@@ -152,7 +158,17 @@ export default function App() {
     setLs('captureBrowser', String(captureBrowserEnabled));
     setLs('transcriptEnabled', String(transcriptEnabled));
     setLs('scrubClientNames', clientNames.trim());
-  }, [ollamaUrl, vlmModel, textModel, threshold, captureWindowEnabled, captureTerminalEnabled, captureBrowserEnabled, transcriptEnabled, clientNames]);
+  }, [
+    ollamaUrl,
+    vlmModel,
+    textModel,
+    threshold,
+    captureWindowEnabled,
+    captureTerminalEnabled,
+    captureBrowserEnabled,
+    transcriptEnabled,
+    clientNames,
+  ]);
 
   const copyTranscriptSnippet = useCallback(async () => {
     const snippet = await window.cardonetCapture.getTranscriptSnippet();
@@ -171,14 +187,17 @@ export default function App() {
   const [tplFileNote, setTplFileNote] = useState('');
   const tplFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const openTemplateEditor = useCallback((id: string | null) => {
-    const t = templates.find(x => x.id === id);
-    setEditingId(t ? t.id : null);
-    setTplTitle(t ? t.title : '');
-    setTplContent(t ? t.content : '');
-    setTplTitleError(false);
-    setTplFileNote('');
-  }, [templates]);
+  const openTemplateEditor = useCallback(
+    (id: string | null) => {
+      const t = templates.find(x => x.id === id);
+      setEditingId(t ? t.id : null);
+      setTplTitle(t ? t.title : '');
+      setTplContent(t ? t.content : '');
+      setTplTitleError(false);
+      setTplFileNote('');
+    },
+    [templates],
+  );
 
   const selectTemplate = useCallback((id: string) => {
     setActiveTemplateId(id);
@@ -213,22 +232,29 @@ export default function App() {
     setTimeout(() => setTplFileNote(n => (n === 'Saved' ? '' : n)), 1500);
   }, [tplTitle, tplContent, editingId]);
 
-  const deleteTemplate = useCallback((id: string) => {
-    if (!confirm('Delete this template?')) return;
-    const list = loadTemplates().filter(x => x.id !== id);
-    saveTemplates(list);
-    setTemplatesState(list);
-    if (getActiveTemplateId() === id) {
-      setActiveTemplateId('');
-      setActiveTemplateIdState('');
-    }
-    if (editingId === id) openTemplateEditor(null);
-  }, [editingId, openTemplateEditor]);
+  const deleteTemplate = useCallback(
+    (id: string) => {
+      if (!confirm('Delete this template?')) return;
+      const list = loadTemplates().filter(x => x.id !== id);
+      saveTemplates(list);
+      setTemplatesState(list);
+      if (getActiveTemplateId() === id) {
+        setActiveTemplateId('');
+        setActiveTemplateIdState('');
+      }
+      if (editingId === id) openTemplateEditor(null);
+    },
+    [editingId, openTemplateEditor],
+  );
 
   const loadTemplateFile = useCallback(async (file: File | undefined) => {
     if (!file) return;
     let text = '';
-    try { text = await file.text(); } catch { text = ''; }
+    try {
+      text = await file.text();
+    } catch {
+      text = '';
+    }
     setTplContent(text);
     setTplTitle(prev => {
       if (prev.trim()) return prev;
@@ -249,7 +275,11 @@ export default function App() {
   const durationWarnedRef = useRef(false);
   const keyframesRef = useRef<Keyframe[]>([]);
   const activityTimelineTextRef = useRef('');
-  const currentTicket = ''; // no UI sets this yet; preserved from legacy (always '')
+  // Explicit `string` annotation (not inferred `''`): no UI sets this yet,
+  // but it's always '' today, not never -- once real UI sets it, the
+  // ticket-aware branches below (recTitle/sentHeading/filename) light up
+  // without TS having narrowed them away as unreachable.
+  const currentTicket: string = ''; // preserved from legacy
 
   const [captureSource, setCaptureSource] = useState<CaptureSource>('window');
   const [windowSources, setWindowSources] = useState<SourceInfo[]>([]);
@@ -261,8 +291,14 @@ export default function App() {
   const [frameCount, setFrameCount] = useState(0);
   const [timerText, setTimerText] = useState('00:00');
   const [recTitle, setRecTitle] = useState('Resolution recording');
+  const [eventsDegradedMessage, setEventsDegradedMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    return window.cardonetCapture.onEventsDegraded(message => setEventsDegradedMessage(message));
+  }, []);
   const [recordingOverlayVisible, setRecordingOverlayVisible] = useState(false);
   const [durationModalVisible, setDurationModalVisible] = useState(false);
+  const [sendConfirmVisible, setSendConfirmVisible] = useState(false);
   const [countdownN, setCountdownN] = useState(3);
 
   const populateWindows = useCallback(async () => {
@@ -270,7 +306,8 @@ export default function App() {
       const sources = await window.cardonetCapture.getSources({ types: ['window'] });
       setWindowSources(sources);
       setWindowSourcesError(sources.length ? null : 'No capturable windows found');
-      if (sources.length) setWindowSourceId(prev => (sources.some((s: SourceInfo) => s.id === prev) ? prev : sources[0].id));
+      if (sources.length)
+        setWindowSourceId(prev => (sources.some((s: SourceInfo) => s.id === prev) ? prev : sources[0].id));
     } catch {
       setWindowSources([]);
       setWindowSourcesError('Could not list windows');
@@ -298,16 +335,24 @@ export default function App() {
     }
   }, []);
 
-  const selectSource = useCallback((kind: CaptureSource) => {
-    setCaptureSource(kind);
-    if (kind === 'window') populateWindows();
-    else populateScreens();
-  }, [populateWindows, populateScreens]);
+  const selectSource = useCallback(
+    (kind: CaptureSource) => {
+      setCaptureSource(kind);
+      if (kind === 'window') populateWindows();
+      else populateScreens();
+    },
+    [populateWindows, populateScreens],
+  );
 
   useEffect(() => {
-    selectSource('window');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // captureSource already defaults to 'window' -- only the async
+    // population side effect is needed on mount, not a redundant setState.
+    // populateWindows()'s own setState calls happen after an IPC round
+    // trip, not synchronously during this effect; the rule's call-graph
+    // check doesn't distinguish that from a same-tick cascading update.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void populateWindows();
+  }, [populateWindows]);
 
   const resolveSourceId = useCallback(async (): Promise<string> => {
     if (captureSource === 'window') {
@@ -335,11 +380,19 @@ export default function App() {
     const hash = aHash(canvas);
     let thr = parseInt(ls('threshold', String(DEFAULT_THRESHOLD)), 10);
     if (!Number.isFinite(thr)) thr = DEFAULT_THRESHOLD;
-    thr = Math.max(0, Math.min(10, thr));
+    thr = clampThreshold(thr);
 
-    if (!lastHashRef.current || hamming(hash, lastHashRef.current) > thr) {
+    if (shouldKeepAsKeyframe(hash, lastHashRef.current, thr)) {
       lastHashRef.current = hash;
-      keyframesRef.current.push({ timestamp: Date.now(), canvas, ocrText: '', ocrWords: [], masks: [], removed: false });
+      keyframesRef.current.push({
+        timestamp: Date.now(),
+        canvas,
+        ocrText: '',
+        ocrWords: [],
+        masks: [],
+        removed: false,
+        reviewed: false,
+      });
       setFrameCount(keyframesRef.current.length);
     }
   }, []);
@@ -361,7 +414,9 @@ export default function App() {
     streamRef.current = stream;
     const video = videoRef.current!;
     video.srcObject = stream;
-    await new Promise<void>(res => { video.onloadedmetadata = () => res(); });
+    await new Promise<void>(res => {
+      video.onloadedmetadata = () => res();
+    });
     video.play();
 
     keyframesRef.current = [];
@@ -407,16 +462,19 @@ export default function App() {
     setRecTitle(currentTicket ? `Resolution recording · #${currentTicket}` : 'Resolution recording');
     setFrameCount(0);
     setTimerText('00:00');
+    setEventsDegradedMessage(null);
     setRecordingOverlayVisible(true);
     startTimer();
     setStage('recording');
 
     ensureOCRWorker().catch(() => {});
 
-    window.cardonetCapture.eventsStart({
-      window: ls('captureWindow', 'true') === 'true',
-      transcript: ls('transcriptEnabled', 'false') === 'true',
-    }).catch(() => {});
+    window.cardonetCapture
+      .eventsStart({
+        window: ls('captureWindow', 'true') === 'true',
+        transcript: ls('transcriptEnabled', 'false') === 'true',
+      })
+      .catch(() => {});
   }, [startCapture, startTimer, setStage]);
 
   const startCountdown = useCallback(() => {
@@ -455,11 +513,14 @@ export default function App() {
   const draftRectRef = useRef<DraftRect | null>(null);
   const boxRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  const liveKeyframes = useMemo(() => keyframesRef.current.filter(kf => !kf.removed), [reviewTick]);
   const currentKf = keyframesRef.current[reviewIndex];
 
   const totalMaskCount = useCallback(() => {
     return keyframesRef.current.reduce((n, kf) => n + (kf.removed ? 0 : kf.masks.length), 0);
+  }, []);
+
+  const unreviewedFrameCount = useCallback(() => {
+    return keyframesRef.current.reduce((n, kf) => n + (!kf.removed && !kf.reviewed ? 1 : 0), 0);
   }, []);
 
   const fitScale = useCallback((kf: Keyframe): number => {
@@ -470,22 +531,25 @@ export default function App() {
     return Math.min(maxW / kf.canvas.width, maxH / kf.canvas.height, 1) || 1;
   }, []);
 
-  const burnPreview = useCallback((kf: Keyframe) => {
-    const src = kf.canvas;
-    const effScale = fitScale(kf) * zoomLevel;
-    const dw = Math.max(1, Math.round(src.width * effScale));
-    const dh = Math.max(1, Math.round(src.height * effScale));
-    const canvas = previewCanvasRef.current;
-    if (!canvas) return;
-    canvas.width = dw;
-    canvas.height = dh;
-    const ctx = canvas.getContext('2d')!;
-    ctx.drawImage(src, 0, 0, dw, dh);
-    ctx.fillStyle = '#18161E';
-    for (const m of kf.masks) {
-      ctx.fillRect(m.x * effScale, m.y * effScale, m.w * effScale, m.h * effScale);
-    }
-  }, [fitScale, zoomLevel]);
+  const burnPreview = useCallback(
+    (kf: Keyframe) => {
+      const src = kf.canvas;
+      const effScale = fitScale(kf) * zoomLevel;
+      const dw = Math.max(1, Math.round(src.width * effScale));
+      const dh = Math.max(1, Math.round(src.height * effScale));
+      const canvas = previewCanvasRef.current;
+      if (!canvas) return;
+      canvas.width = dw;
+      canvas.height = dh;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(src, 0, 0, dw, dh);
+      ctx.fillStyle = '#18161E';
+      for (const m of kf.masks) {
+        ctx.fillRect(m.x * effScale, m.y * effScale, m.w * effScale, m.h * effScale);
+      }
+    },
+    [fitScale, zoomLevel],
+  );
 
   const positionOverlay = useCallback(() => {
     const canvas = previewCanvasRef.current;
@@ -502,7 +566,6 @@ export default function App() {
     if (!reviewReady || !currentKf || currentKf.removed) return;
     burnPreview(currentKf);
     positionOverlay();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewReady, reviewIndex, reviewTick, zoomLevel, currentKf, burnPreview, positionOverlay]);
 
   const resetZoom = useCallback(() => setZoomLevel(1), []);
@@ -517,29 +580,34 @@ export default function App() {
       kfs[i].ocrWords = words;
       kfs[i].masks = autoMasksFor(kfs[i]);
     }
+    if (kfs[0]) kfs[0].reviewed = true;
     setReviewReady(true);
     setReviewIndex(0);
+    setSendConfirmVisible(false);
     resetZoom();
     bumpReview();
   }, [resetZoom, bumpReview]);
 
-  const pointerToCanvas = useCallback((e: { clientX: number; clientY: number }) => {
-    const kf = keyframesRef.current[reviewIndex];
-    const overlay = maskOverlayRef.current!;
-    const rect = overlay.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width * kf.canvas.width;
-    const y = (e.clientY - rect.top) / rect.height * kf.canvas.height;
-    return {
-      x: Math.max(0, Math.min(kf.canvas.width, x)),
-      y: Math.max(0, Math.min(kf.canvas.height, y)),
-    };
-  }, [reviewIndex]);
+  const pointerToCanvas = useCallback(
+    (e: { clientX: number; clientY: number }) => {
+      const kf = keyframesRef.current[reviewIndex];
+      const overlay = maskOverlayRef.current!;
+      const rect = overlay.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * kf.canvas.width;
+      const y = ((e.clientY - rect.top) / rect.height) * kf.canvas.height;
+      return {
+        x: Math.max(0, Math.min(kf.canvas.width, x)),
+        y: Math.max(0, Math.min(kf.canvas.height, y)),
+      };
+    },
+    [reviewIndex],
+  );
 
   const applyBoxGeometry = useCallback((box: HTMLDivElement, m: Mask, cw: number, ch: number) => {
-    box.style.left = (m.x / cw * 100) + '%';
-    box.style.top = (m.y / ch * 100) + '%';
-    box.style.width = (m.w / cw * 100) + '%';
-    box.style.height = (m.h / ch * 100) + '%';
+    box.style.left = (m.x / cw) * 100 + '%';
+    box.style.top = (m.y / ch) * 100 + '%';
+    box.style.width = (m.w / cw) * 100 + '%';
+    box.style.height = (m.h / ch) * 100 + '%';
   }, []);
 
   const renderDraft = useCallback(() => {
@@ -547,36 +615,45 @@ export default function App() {
     if (!overlay) return;
     let el = overlay.querySelector<HTMLDivElement>('.mask-draft');
     const d = draftRectRef.current;
-    if (!d) { el?.remove(); return; }
+    if (!d) {
+      el?.remove();
+      return;
+    }
     if (!el) {
       el = document.createElement('div');
       el.className = 'mask-draft';
       overlay.appendChild(el);
     }
     const kf = keyframesRef.current[reviewIndex];
-    el.style.left = (d.x / kf.canvas.width * 100) + '%';
-    el.style.top = (d.y / kf.canvas.height * 100) + '%';
-    el.style.width = (d.w / kf.canvas.width * 100) + '%';
-    el.style.height = (d.h / kf.canvas.height * 100) + '%';
+    el.style.left = (d.x / kf.canvas.width) * 100 + '%';
+    el.style.top = (d.y / kf.canvas.height) * 100 + '%';
+    el.style.width = (d.w / kf.canvas.width) * 100 + '%';
+    el.style.height = (d.h / kf.canvas.height) * 100 + '%';
     burnPreview(kf);
   }, [reviewIndex, burnPreview]);
 
-  const beginDraw = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    const p = pointerToCanvas(e);
-    interactionRef.current = { type: 'draw', x0: p.x, y0: p.y };
-    draftRectRef.current = { x: p.x, y: p.y, w: 0, h: 0 };
-    renderDraft();
-  }, [pointerToCanvas, renderDraft]);
+  const beginDraw = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.button !== 0) return;
+      const p = pointerToCanvas(e);
+      interactionRef.current = { type: 'draw', x0: p.x, y0: p.y };
+      draftRectRef.current = { x: p.x, y: p.y, w: 0, h: 0 };
+      renderDraft();
+    },
+    [pointerToCanvas, renderDraft],
+  );
 
-  const beginMove = useCallback((e: React.MouseEvent, id: string) => {
-    if (e.button !== 0) return;
-    e.stopPropagation();
-    const kf = keyframesRef.current[reviewIndex];
-    const m = kf.masks.find(x => x.id === id)!;
-    const p = pointerToCanvas(e);
-    interactionRef.current = { type: 'move', maskId: id, dx: p.x - m.x, dy: p.y - m.y };
-  }, [reviewIndex, pointerToCanvas]);
+  const beginMove = useCallback(
+    (e: React.MouseEvent, id: string) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      const kf = keyframesRef.current[reviewIndex];
+      const m = kf.masks.find(x => x.id === id)!;
+      const p = pointerToCanvas(e);
+      interactionRef.current = { type: 'move', maskId: id, dx: p.x - m.x, dy: p.y - m.y };
+    },
+    [reviewIndex, pointerToCanvas],
+  );
 
   const beginResize = useCallback((e: React.MouseEvent, id: string, handle: string) => {
     if (e.button !== 0) return;
@@ -584,48 +661,68 @@ export default function App() {
     interactionRef.current = { type: 'resize', maskId: id, handle };
   }, []);
 
-  const onPointerMove = useCallback((e: MouseEvent) => {
-    const interaction = interactionRef.current;
-    if (!interaction) return;
-    const kf = keyframesRef.current[reviewIndex];
-    if (!kf) return;
-    const cw = kf.canvas.width, ch = kf.canvas.height;
-    const p = pointerToCanvas(e);
-    const MIN = Math.max(6, cw * 0.01);
+  const onPointerMove = useCallback(
+    (e: MouseEvent) => {
+      const interaction = interactionRef.current;
+      if (!interaction) return;
+      const kf = keyframesRef.current[reviewIndex];
+      if (!kf) return;
+      const cw = kf.canvas.width,
+        ch = kf.canvas.height;
+      const p = pointerToCanvas(e);
+      const MIN = Math.max(6, cw * 0.01);
 
-    if (interaction.type === 'draw') {
-      draftRectRef.current = {
-        x: Math.min(interaction.x0!, p.x),
-        y: Math.min(interaction.y0!, p.y),
-        w: Math.abs(p.x - interaction.x0!),
-        h: Math.abs(p.y - interaction.y0!),
-      };
-      renderDraft();
-      return;
-    }
+      if (interaction.type === 'draw') {
+        draftRectRef.current = {
+          x: Math.min(interaction.x0!, p.x),
+          y: Math.min(interaction.y0!, p.y),
+          w: Math.abs(p.x - interaction.x0!),
+          h: Math.abs(p.y - interaction.y0!),
+        };
+        renderDraft();
+        return;
+      }
 
-    const m = kf.masks.find(x => x.id === interaction.maskId);
-    if (!m) return;
+      const m = kf.masks.find(x => x.id === interaction.maskId);
+      if (!m) return;
 
-    if (interaction.type === 'move') {
-      m.x = Math.max(0, Math.min(cw - m.w, p.x - interaction.dx!));
-      m.y = Math.max(0, Math.min(ch - m.h, p.y - interaction.dy!));
-    } else if (interaction.type === 'resize') {
-      const h = interaction.handle!;
-      let x = m.x, y = m.y, w = m.w, ht = m.h;
-      const right = x + w, bottom = y + ht;
-      if (h.includes('w')) { x = Math.min(p.x, right - MIN); w = right - x; }
-      if (h.includes('e')) { w = Math.max(MIN, Math.min(cw, p.x) - x); }
-      if (h.includes('n')) { y = Math.min(p.y, bottom - MIN); ht = bottom - y; }
-      if (h.includes('s')) { ht = Math.max(MIN, Math.min(ch, p.y) - y); }
-      m.x = Math.max(0, x); m.y = Math.max(0, y);
-      m.w = Math.min(cw - m.x, w); m.h = Math.min(ch - m.y, ht);
-    }
+      if (interaction.type === 'move') {
+        m.x = Math.max(0, Math.min(cw - m.w, p.x - interaction.dx!));
+        m.y = Math.max(0, Math.min(ch - m.h, p.y - interaction.dy!));
+      } else if (interaction.type === 'resize') {
+        const h = interaction.handle!;
+        let x = m.x,
+          y = m.y,
+          w = m.w,
+          ht = m.h;
+        const right = x + w,
+          bottom = y + ht;
+        if (h.includes('w')) {
+          x = Math.min(p.x, right - MIN);
+          w = right - x;
+        }
+        if (h.includes('e')) {
+          w = Math.max(MIN, Math.min(cw, p.x) - x);
+        }
+        if (h.includes('n')) {
+          y = Math.min(p.y, bottom - MIN);
+          ht = bottom - y;
+        }
+        if (h.includes('s')) {
+          ht = Math.max(MIN, Math.min(ch, p.y) - y);
+        }
+        m.x = Math.max(0, x);
+        m.y = Math.max(0, y);
+        m.w = Math.min(cw - m.x, w);
+        m.h = Math.min(ch - m.y, ht);
+      }
 
-    const box = boxRefs.current.get(m.id);
-    if (box) applyBoxGeometry(box, m, cw, ch);
-    burnPreview(kf);
-  }, [reviewIndex, pointerToCanvas, renderDraft, applyBoxGeometry, burnPreview]);
+      const box = boxRefs.current.get(m.id);
+      if (box) applyBoxGeometry(box, m, cw, ch);
+      burnPreview(kf);
+    },
+    [reviewIndex, pointerToCanvas, renderDraft, applyBoxGeometry, burnPreview],
+  );
 
   const onPointerUp = useCallback(() => {
     const interaction = interactionRef.current;
@@ -657,56 +754,81 @@ export default function App() {
   }, [onPointerMove, onPointerUp]);
 
   useEffect(() => {
-    const onResize = () => { if (stage === 'review' && reviewReady) bumpReview(); };
+    const onResize = () => {
+      if (stage === 'review' && reviewReady) bumpReview();
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [stage, reviewReady, bumpReview]);
 
-  const deleteMask = useCallback((maskId: string) => {
-    const kf = keyframesRef.current[reviewIndex];
-    kf.masks = kf.masks.filter(x => x.id !== maskId);
-    bumpReview();
-  }, [reviewIndex, bumpReview]);
+  const deleteMask = useCallback(
+    (maskId: string) => {
+      const kf = keyframesRef.current[reviewIndex];
+      kf.masks = kf.masks.filter(x => x.id !== maskId);
+      bumpReview();
+    },
+    [reviewIndex, bumpReview],
+  );
 
-  const setZoom = useCallback((newZoom: number, anchorClientX?: number, anchorClientY?: number) => {
-    const kf = keyframesRef.current[reviewIndex];
-    if (!reviewReady || !kf || kf.removed) return;
-    const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
-    const stage_ = frameStageRef.current;
-    const canvas = previewCanvasRef.current;
-    if (!stage_ || !canvas) return;
-    const rect = stage_.getBoundingClientRect();
-    const ax = (anchorClientX == null ? rect.left + stage_.clientWidth / 2 : anchorClientX) - rect.left;
-    const ay = (anchorClientY == null ? rect.top + stage_.clientHeight / 2 : anchorClientY) - rect.top;
-    const oldW = canvas.width || 1, oldH = canvas.height || 1;
-    const fx = (stage_.scrollLeft + ax) / oldW;
-    const fy = (stage_.scrollTop + ay) / oldH;
+  const setZoom = useCallback(
+    (newZoom: number, anchorClientX?: number, anchorClientY?: number) => {
+      const kf = keyframesRef.current[reviewIndex];
+      if (!reviewReady || !kf || kf.removed) return;
+      const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
+      const stage_ = frameStageRef.current;
+      const canvas = previewCanvasRef.current;
+      if (!stage_ || !canvas) return;
+      const rect = stage_.getBoundingClientRect();
+      const ax = (anchorClientX == null ? rect.left + stage_.clientWidth / 2 : anchorClientX) - rect.left;
+      const ay = (anchorClientY == null ? rect.top + stage_.clientHeight / 2 : anchorClientY) - rect.top;
+      const oldW = canvas.width || 1,
+        oldH = canvas.height || 1;
+      const fx = (stage_.scrollLeft + ax) / oldW;
+      const fy = (stage_.scrollTop + ay) / oldH;
 
-    setZoomLevel(z);
-    // burnPreview/positionOverlay re-run via the effect above once zoomLevel
-    // commits; scroll restoration needs the NEW canvas size, so defer one tick.
-    requestAnimationFrame(() => {
-      stage_.scrollLeft = fx * (canvas.width || oldW) - ax;
-      stage_.scrollTop = fy * (canvas.height || oldH) - ay;
-    });
-  }, [reviewIndex, reviewReady]);
+      setZoomLevel(z);
+      // burnPreview/positionOverlay re-run via the effect above once zoomLevel
+      // commits; scroll restoration needs the NEW canvas size, so defer one tick.
+      requestAnimationFrame(() => {
+        stage_.scrollLeft = fx * (canvas.width || oldW) - ax;
+        stage_.scrollTop = fy * (canvas.height || oldH) - ay;
+      });
+    },
+    [reviewIndex, reviewReady],
+  );
 
-  const goToFrame = useCallback((i: number) => {
-    setReviewIndex(i);
-    resetZoom();
-  }, [resetZoom]);
+  const goToFrame = useCallback(
+    (i: number) => {
+      const kf = keyframesRef.current[i];
+      if (kf) kf.reviewed = true;
+      setReviewIndex(i);
+      resetZoom();
+    },
+    [resetZoom],
+  );
 
   const removeFrame = useCallback(() => {
     const kf = keyframesRef.current[reviewIndex];
-    if (kf) { kf.removed = true; bumpReview(); }
+    if (kf) {
+      kf.removed = true;
+      bumpReview();
+    }
   }, [reviewIndex, bumpReview]);
   const restoreFrame = useCallback(() => {
     const kf = keyframesRef.current[reviewIndex];
-    if (kf) { kf.removed = false; bumpReview(); }
+    if (kf) {
+      kf.removed = false;
+      bumpReview();
+    }
   }, [reviewIndex, bumpReview]);
 
   // ─── Generation pipeline ────────────────────────────────────────────────
-  const [procStates, setProcStates] = useState<Array<'pending' | 'active' | 'done'>>(['pending', 'pending', 'pending', 'pending']);
+  const [procStates, setProcStates] = useState<Array<'pending' | 'active' | 'done'>>([
+    'pending',
+    'pending',
+    'pending',
+    'pending',
+  ]);
   const [progressPct, setProgressPct] = useState(0);
   const [progressLabel, setProgressLabel] = useState('Starting…');
   const [procEyebrow, setProcEyebrow] = useState('Working');
@@ -717,7 +839,9 @@ export default function App() {
   const [saveNote, setSaveNote] = useState<{ text: string; isError: boolean } | null>(null);
 
   const procStep = useCallback((index: number, state?: 'done') => {
-    setProcStates(prev => prev.map((_, n) => (n < index ? 'done' : n === index ? (state === 'done' ? 'done' : 'active') : 'pending')));
+    setProcStates(prev =>
+      prev.map((_, n) => (n < index ? 'done' : n === index ? (state === 'done' ? 'done' : 'active') : 'pending')),
+    );
   }, []);
   const resetProcSteps = useCallback(() => setProcStates(['pending', 'pending', 'pending', 'pending']), []);
   const setProgress = useCallback((pct: number, label?: string) => {
@@ -725,24 +849,32 @@ export default function App() {
     if (label) setProgressLabel(label);
   }, []);
 
-  const finishWithSummary = useCallback((summary: string) => {
-    setSummaryText(summary);
-    setSentHeading(currentTicket ? `Ticket-ready work log for #${currentTicket}` : 'Ticket-ready work log');
-    setSentEyebrow(`Summary generated · ${summaryModelLabel(summaryModel)}`);
-    setSaveNote(null);
-    setStage('sent');
-  }, [summaryModel, setStage]);
+  const finishWithSummary = useCallback(
+    (summary: string) => {
+      setSummaryText(summary);
+      setSentHeading(currentTicket ? `Ticket-ready work log for #${currentTicket}` : 'Ticket-ready work log');
+      setSentEyebrow(`Summary generated · ${summaryModelLabel(summaryModel)}`);
+      setSaveNote(null);
+      setStage('sent');
+    },
+    [summaryModel, setStage],
+  );
 
-  const showGenerationFailure = useCallback((message: string, fallbackText: string) => {
-    setProgress(100, `Generation failed: ${message}`);
-    setProcEyebrow('Generation failed');
-    setRawTextFallback(fallbackText || null);
-  }, [setProgress]);
+  const showGenerationFailure = useCallback(
+    (message: string, fallbackText: string) => {
+      setProgress(100, `Generation failed: ${message}`);
+      setProcEyebrow('Generation failed');
+      setRawTextFallback(fallbackText || null);
+    },
+    [setProgress],
+  );
 
   const generateSummary = useCallback(async () => {
     const live = keyframesRef.current.filter(kf => !kf.removed);
     if (!live.length) {
-      alert('Every frame has been removed — there is nothing to send. Keep at least one frame or discard the recording.');
+      alert(
+        'Every frame has been removed — there is nothing to send. Keep at least one frame or discard the recording.',
+      );
       return;
     }
 
@@ -761,7 +893,10 @@ export default function App() {
       dataUrl: maskAndDownscale(kf.canvas, kf.masks),
       ocrText: maskedOcrText(kf),
     }));
-    const rawFallbackText = sendFrames.map(f => f.ocrText).filter(Boolean).join('\n\n');
+    const rawFallbackText = sendFrames
+      .map(f => f.ocrText)
+      .filter(Boolean)
+      .join('\n\n');
     procStep(1, 'done');
 
     // Free full-res canvases now -- review is over.
@@ -772,11 +907,18 @@ export default function App() {
 
     try {
       const request: GenerateRequest = {
-        provider: summaryModel as ProviderId,
+        provider: summaryModel,
         frames: sendFrames,
         activityTimelineText: activityTimelineTextRef.current,
         templateContent: activeTemplateContentForGenerate(),
-        ollama: summaryModel === 'ollama' ? { url: ls('ollamaUrl', 'http://localhost:11434'), vlmModel: ls('vlmModel', 'llava'), textModel: ls('textModel', 'llama3') } : undefined,
+        ollama:
+          summaryModel === 'ollama'
+            ? {
+                url: ls('ollamaUrl', 'http://localhost:11434'),
+                vlmModel: ls('vlmModel', 'llava'),
+                textModel: ls('textModel', 'llama3'),
+              }
+            : undefined,
       };
       const summary = await window.cardonetCapture.generate(request);
       procStep(2, 'done');
@@ -821,7 +963,9 @@ export default function App() {
         terminal: ls('captureTerminal', 'true') === 'true',
         browserHistory: ls('captureBrowser', 'true') === 'true',
       });
-    } catch { rawEvents = []; }
+    } catch {
+      rawEvents = [];
+    }
     activityTimelineTextRef.current = buildActivityTimelineText(scrubEvents(rawEvents));
 
     if (keyframesRef.current.length === 0) {
@@ -877,40 +1021,96 @@ export default function App() {
           <span className="brand-sub">Capture</span>
         </div>
         <div className="tb-gradient" />
-        <button className="tb-halo is-disabled coming-soon" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-          <span className="dot" /><span>HaloPSA not connected</span>
+        <button
+          className="tb-halo is-disabled coming-soon"
+          data-tip="Coming soon"
+          aria-disabled="true"
+          onClick={e => e.preventDefault()}
+        >
+          <span className="dot" />
+          <span>HaloPSA not connected</span>
         </button>
       </div>
 
       {/* ── Workspace ─────────────────────────────────────────────────── */}
       <div className="workspace">
         <aside className="sidebar">
-          <div className="side-head"><span className="label">Assigned Tickets</span></div>
+          <div className="side-head">
+            <span className="label">Assigned Tickets</span>
+          </div>
           <div className="side-tickets">
             <div className="empty-card">
               <div className="title">No tickets yet</div>
-              <p>Connect HaloPSA to pull in the tickets assigned to you. You can record and generate summaries without it.</p>
-              <button className="btn btn-pink btn-sm coming-soon is-disabled" style={{ width: '100%', boxShadow: 'none' }} data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>Connect HaloPSA</button>
+              <p>
+                Connect HaloPSA to pull in the tickets assigned to you. You can record and generate summaries without
+                it.
+              </p>
+              <button
+                className="btn btn-pink btn-sm coming-soon is-disabled"
+                style={{ width: '100%', boxShadow: 'none' }}
+                data-tip="Coming soon"
+                aria-disabled="true"
+                onClick={e => e.preventDefault()}
+              >
+                Connect HaloPSA
+              </button>
             </div>
           </div>
           <nav className="side-nav">
-            <button className={`nav-item${screen === 'work' ? ' active' : ''}`} onClick={() => setScreen('work')}>New Recording</button>
-            <button className={`nav-item${screen === 'templates' ? ' active' : ''}`} onClick={() => { openTemplateEditor(null); setScreen('templates'); }}>Summary Templates</button>
-            <button className={`nav-item${screen === 'settings' ? ' active' : ''}`} onClick={() => setScreen('settings')}>Settings</button>
+            <button className={`nav-item${screen === 'work' ? ' active' : ''}`} onClick={() => setScreen('work')}>
+              New Recording
+            </button>
+            <button
+              className={`nav-item${screen === 'templates' ? ' active' : ''}`}
+              onClick={() => {
+                openTemplateEditor(null);
+                setScreen('templates');
+              }}
+            >
+              Summary Templates
+            </button>
+            <button
+              className={`nav-item${screen === 'settings' ? ' active' : ''}`}
+              onClick={() => setScreen('settings')}
+            >
+              Settings
+            </button>
           </nav>
           <div className="side-identity">
             <span className="avatar">○</span>
-            <div className="who">Not connected to<br />HaloPSA</div>
+            <div className="who">
+              Not connected to
+              <br />
+              HaloPSA
+            </div>
           </div>
         </aside>
 
         <div className="content">
           <div className="stepper" id="stepper">
-            <div className={`step${stepperActive > 0 || stepperAllDone ? ' done' : ''}${stepperActive === 0 && !stepperAllDone ? ' active' : ''}`} data-step="0"><span className="step-num">1</span><span className="step-label">Record</span></div>
+            <div
+              className={`step${stepperActive > 0 || stepperAllDone ? ' done' : ''}${stepperActive === 0 && !stepperAllDone ? ' active' : ''}`}
+              data-step="0"
+            >
+              <span className="step-num">1</span>
+              <span className="step-label">Record</span>
+            </div>
             <span className="step-arrow">→</span>
-            <div className={`step${stepperActive > 1 || stepperAllDone ? ' done' : ''}${stepperActive === 1 && !stepperAllDone ? ' active' : ''}`} data-step="1"><span className="step-num">2</span><span className="step-label">Review</span></div>
+            <div
+              className={`step${stepperActive > 1 || stepperAllDone ? ' done' : ''}${stepperActive === 1 && !stepperAllDone ? ' active' : ''}`}
+              data-step="1"
+            >
+              <span className="step-num">2</span>
+              <span className="step-label">Review</span>
+            </div>
             <span className="step-arrow">→</span>
-            <div className={`step${stepperAllDone ? ' done' : ''}${stepperActive === 2 && !stepperAllDone ? ' active' : ''}`} data-step="2"><span className="step-num">3</span><span className="step-label">Summary</span></div>
+            <div
+              className={`step${stepperAllDone ? ' done' : ''}${stepperActive === 2 && !stepperAllDone ? ' active' : ''}`}
+              data-step="2"
+            >
+              <span className="step-num">3</span>
+              <span className="step-label">Summary</span>
+            </div>
           </div>
 
           <div className="screen-work">
@@ -927,13 +1127,21 @@ export default function App() {
                   <div>
                     <span className="setup-label">Capture Source</span>
                     <div className="source-grid">
-                      <button className={`source-tile${captureSource === 'window' ? ' active' : ''}`} onClick={() => selectSource('window')}>
+                      <button
+                        className={`source-tile${captureSource === 'window' ? ' active' : ''}`}
+                        onClick={() => selectSource('window')}
+                      >
                         <span className="badge">Recommended</span>
                         <span className="source-ico" />
                         <div className="name">Single window</div>
-                        <div className="desc">One app only - sharper detection, no wallpaper or other windows in frame.</div>
+                        <div className="desc">
+                          One app only - sharper detection, no wallpaper or other windows in frame.
+                        </div>
                       </button>
-                      <button className={`source-tile${captureSource === 'screen' ? ' active' : ''}`} onClick={() => selectSource('screen')}>
+                      <button
+                        className={`source-tile${captureSource === 'screen' ? ' active' : ''}`}
+                        onClick={() => selectSource('screen')}
+                      >
                         <span className="source-ico" />
                         <div className="name">Entire screen</div>
                         <div className="desc">The whole desktop, including other windows and notifications.</div>
@@ -941,22 +1149,50 @@ export default function App() {
                     </div>
                     {captureSource === 'window' && (
                       <div className="window-picker" id="window-picker">
-                        <span className="ico"><span /></span>
+                        <span className="ico">
+                          <span />
+                        </span>
                         <div className="meta">
                           <div className="cap">Window to capture</div>
-                          <select id="window-select" value={windowSourceId} onChange={e => setWindowSourceId(e.target.value)}>
-                            {windowSourcesError ? <option value="">{windowSourcesError}</option> : windowSources.map(s => <option key={s.id} value={s.id}>{escapeHtml(s.name || s.id)}</option>)}
+                          <select
+                            id="window-select"
+                            value={windowSourceId}
+                            onChange={e => setWindowSourceId(e.target.value)}
+                          >
+                            {windowSourcesError ? (
+                              <option value="">{windowSourcesError}</option>
+                            ) : (
+                              windowSources.map(s => (
+                                <option key={s.id} value={s.id}>
+                                  {escapeHtml(s.name || s.id)}
+                                </option>
+                              ))
+                            )}
                           </select>
                         </div>
                       </div>
                     )}
                     {screenPickerVisible && (
                       <div className="window-picker" id="screen-picker">
-                        <span className="ico"><span /></span>
+                        <span className="ico">
+                          <span />
+                        </span>
                         <div className="meta">
                           <div className="cap">Display to record</div>
-                          <select id="screen-select" value={screenSourceId} onChange={e => setScreenSourceId(e.target.value)}>
-                            {screenSourcesError ? <option value="">{screenSourcesError}</option> : screenSources.map(s => <option key={s.id} value={s.id}>{escapeHtml(s.name || s.id)}</option>)}
+                          <select
+                            id="screen-select"
+                            value={screenSourceId}
+                            onChange={e => setScreenSourceId(e.target.value)}
+                          >
+                            {screenSourcesError ? (
+                              <option value="">{screenSourcesError}</option>
+                            ) : (
+                              screenSources.map(s => (
+                                <option key={s.id} value={s.id}>
+                                  {escapeHtml(s.name || s.id)}
+                                </option>
+                              ))
+                            )}
                           </select>
                         </div>
                       </div>
@@ -965,10 +1201,12 @@ export default function App() {
                   <div className="start-row">
                     <div className="protect-inline">
                       <span className="check">✓</span>
-                      Sensitive data is detected and masked automatically, and you confirm redaction before anything is sent.
+                      Sensitive data is detected and masked automatically, and you confirm redaction before anything is
+                      sent.
                     </div>
                     <button className="btn btn-pink btn-lg" onClick={startCountdown}>
-                      <span className="btn-rec-dot" />Start Recording
+                      <span className="btn-rec-dot" />
+                      Start Recording
                     </button>
                   </div>
                 </div>
@@ -983,14 +1221,27 @@ export default function App() {
                   <span className="rec-pulse" />
                   <div className="rec-timer mono">{timerText}</div>
                   <div className="rec-sub">Capturing keyframes · sensitive data masked on the fly</div>
-                  <div className="rec-preview"><video ref={videoRef} muted autoPlay playsInline /></div>
-                  <div className="rec-stat-row">
-                    <div className="rec-stat"><div className="v mono">{frameCount}</div><div className="k">keyframes</div></div>
+                  <div className="rec-preview">
+                    <video ref={videoRef} muted autoPlay playsInline />
                   </div>
+                  <div className="rec-stat-row">
+                    <div className="rec-stat">
+                      <div className="v mono">{frameCount}</div>
+                      <div className="k">keyframes</div>
+                    </div>
+                  </div>
+                  {eventsDegradedMessage && (
+                    <div className="rec-sub" style={{ color: 'var(--cn-red)', marginTop: 8 }}>
+                      ⚠ {eventsDegradedMessage}
+                    </div>
+                  )}
                 </div>
                 <div className="spacer" />
                 <div style={{ display: 'flex', justifyContent: 'center' }}>
-                  <button className="btn btn-dark btn-lg" onClick={onStop}><span className="btn-stop-sq" />Stop &amp; review</button>
+                  <button className="btn btn-dark btn-lg" onClick={onStop}>
+                    <span className="btn-stop-sq" />
+                    Stop &amp; review
+                  </button>
                 </div>
               </section>
 
@@ -1000,53 +1251,141 @@ export default function App() {
                   <div style={{ flex: 1 }}>
                     <div className="eyebrow">Confirm Redaction</div>
                     <h4 className="title">Review</h4>
-                    <p className="subnote" style={{ margin: '8px 0 0', maxWidth: 560 }}>Check every captured frame, drag to mask anything the automatic pass missed, and adjust or remove any frame before they reach the model.</p>
+                    <p className="subnote" style={{ margin: '8px 0 0', maxWidth: 560 }}>
+                      Check every captured frame, drag to mask anything the automatic pass missed, and adjust or remove
+                      any frame before they reach the model.
+                    </p>
                   </div>
-                  <span className="masked-badge"><span>{totalMaskCount()}</span> regions masked</span>
+                  <span className="masked-badge">
+                    <span>{totalMaskCount()}</span> regions masked
+                  </span>
                 </div>
 
                 <div className="frame-card">
                   <div className="frame-card-head">
                     <span className="cap">CAPTURED FRAMES · redacted preview</span>
                     <div className="zoom-controls">
-                      <button type="button" className="zoom-btn" aria-label="Zoom out" title="Zoom out" disabled={zoomLevel <= MIN_ZOOM + 1e-3} onClick={() => setZoom(zoomLevel / 1.25)}>−</button>
-                      <span className="zoom-label" title="Scroll to zoom · drag scrollbars to pan · double-click to reset">{Math.round(zoomLevel * 100)}%</span>
-                      <button type="button" className="zoom-btn" aria-label="Zoom in" title="Zoom in" disabled={zoomLevel >= MAX_ZOOM - 1e-3} onClick={() => setZoom(zoomLevel * 1.25)}>+</button>
-                      <button type="button" className="zoom-btn zoom-fit" disabled={zoomLevel === 1} onClick={() => setZoom(1)}>Fit</button>
+                      <button
+                        type="button"
+                        className="zoom-btn"
+                        aria-label="Zoom out"
+                        title="Zoom out"
+                        disabled={zoomLevel <= MIN_ZOOM + 1e-3}
+                        onClick={() => setZoom(zoomLevel / 1.25)}
+                      >
+                        −
+                      </button>
+                      <span
+                        className="zoom-label"
+                        title="Scroll to zoom · drag scrollbars to pan · double-click to reset"
+                      >
+                        {Math.round(zoomLevel * 100)}%
+                      </span>
+                      <button
+                        type="button"
+                        className="zoom-btn"
+                        aria-label="Zoom in"
+                        title="Zoom in"
+                        disabled={zoomLevel >= MAX_ZOOM - 1e-3}
+                        onClick={() => setZoom(zoomLevel * 1.25)}
+                      >
+                        +
+                      </button>
+                      <button
+                        type="button"
+                        className="zoom-btn zoom-fit"
+                        disabled={zoomLevel === 1}
+                        onClick={() => setZoom(1)}
+                      >
+                        Fit
+                      </button>
                     </div>
-                    <span className="pos">Frame {keyframesRef.current.length ? reviewIndex + 1 : 0} of {keyframesRef.current.length}</span>
+                    <span className="pos">
+                      Frame {keyframesRef.current.length ? reviewIndex + 1 : 0} of {keyframesRef.current.length}
+                    </span>
                   </div>
                   <div className="draw-hint">
                     <span className="ico" />
-                    <span><b>Drag on the frame</b> to mask anything the automatic pass missed. <span className="pink">Pink</span> boxes were detected automatically, <span className="navy">dashed</span> boxes are yours. Drag any box to move it, pull a corner to resize, or ✕ to remove it.</span>
+                    <span>
+                      <b>Drag on the frame</b> to mask anything the automatic pass missed.{' '}
+                      <span className="pink">Pink</span> boxes were detected automatically,{' '}
+                      <span className="navy">dashed</span> boxes are yours. Drag any box to move it, pull a corner to
+                      resize, or ✕ to remove it.
+                    </span>
                   </div>
 
                   <div className="frame-surface">
                     <div className="frame-titlebar">
                       <span className="dot" />
-                      <span className="ttl">{reviewReady && currentKf ? `Keyframe ${reviewIndex + 1} · ${new Date(currentKf.timestamp).toLocaleTimeString()}` : 'Frame'}</span>
-                      <button className="remove-frame-btn" onClick={removeFrame}><span style={{ fontSize: 12, lineHeight: 1 }}>✕</span>Remove this frame</button>
+                      <span className="ttl">
+                        {reviewReady && currentKf
+                          ? `Keyframe ${reviewIndex + 1} · ${new Date(currentKf.timestamp).toLocaleTimeString()}`
+                          : 'Frame'}
+                      </span>
+                      <button className="remove-frame-btn" onClick={removeFrame}>
+                        <span style={{ fontSize: 12, lineHeight: 1 }}>✕</span>Remove this frame
+                      </button>
                     </div>
-                    <div className="frame-stage" ref={frameStageRef}
-                      onWheel={e => { if (!reviewReady) return; e.preventDefault(); setZoom(zoomLevel * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX, e.clientY); }}
+                    <div
+                      className="frame-stage"
+                      ref={frameStageRef}
+                      onWheel={e => {
+                        if (!reviewReady) return;
+                        e.preventDefault();
+                        setZoom(zoomLevel * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX, e.clientY);
+                      }}
                       onDoubleClick={() => setZoom(1)}
                     >
-                      <canvas className={`preview-canvas${!reviewReady || !currentKf ? ' hidden' : ''}`} ref={previewCanvasRef} />
+                      <canvas
+                        className={`preview-canvas${!reviewReady || !currentKf ? ' hidden' : ''}`}
+                        ref={previewCanvasRef}
+                      />
                       {(!reviewReady || !currentKf) && (
-                        <div className="frame-empty"><span className="mini-spin" /> {scanningLabel || 'Scanning frames for sensitive data…'}</div>
+                        <div className="frame-empty">
+                          <span className="mini-spin" /> {scanningLabel || 'Scanning frames for sensitive data…'}
+                        </div>
                       )}
                       {reviewReady && currentKf && !currentKf.removed && (
-                        <div className="mask-overlay" ref={maskOverlayRef} onMouseDown={e => { if (e.target === maskOverlayRef.current) beginDraw(e); }}>
+                        <div
+                          className="mask-overlay"
+                          ref={maskOverlayRef}
+                          onMouseDown={e => {
+                            if (e.target === maskOverlayRef.current) beginDraw(e);
+                          }}
+                        >
                           {currentKf.masks.map(m => (
-                            <div key={m.id} className={`mask-box ${m.auto ? 'auto' : 'user'}`}
-                              ref={el => { if (el) boxRefs.current.set(m.id, el); else boxRefs.current.delete(m.id); }}
-                              style={{ left: `${m.x / currentKf.canvas.width * 100}%`, top: `${m.y / currentKf.canvas.height * 100}%`, width: `${m.w / currentKf.canvas.width * 100}%`, height: `${m.h / currentKf.canvas.height * 100}%` }}
+                            <div
+                              key={m.id}
+                              className={`mask-box ${m.auto ? 'auto' : 'user'}`}
+                              ref={el => {
+                                if (el) boxRefs.current.set(m.id, el);
+                                else boxRefs.current.delete(m.id);
+                              }}
+                              style={{
+                                left: `${(m.x / currentKf.canvas.width) * 100}%`,
+                                top: `${(m.y / currentKf.canvas.height) * 100}%`,
+                                width: `${(m.w / currentKf.canvas.width) * 100}%`,
+                                height: `${(m.h / currentKf.canvas.height) * 100}%`,
+                              }}
                               onMouseDown={e => beginMove(e, m.id)}
                             >
                               <span className="mask-tag">{m.auto ? 'Auto' : 'Manual'}</span>
-                              <button className="mask-del" onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); deleteMask(m.id); }}>✕</button>
+                              <button
+                                className="mask-del"
+                                onMouseDown={e => e.stopPropagation()}
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  deleteMask(m.id);
+                                }}
+                              >
+                                ✕
+                              </button>
                               {(['nw', 'ne', 'sw', 'se'] as const).map(h => (
-                                <span key={h} className={`mask-handle mh-${h}`} onMouseDown={e => beginResize(e, m.id, h)} />
+                                <span
+                                  key={h}
+                                  className={`mask-handle mh-${h}`}
+                                  onMouseDown={e => beginResize(e, m.id, h)}
+                                />
                               ))}
                             </div>
                           ))}
@@ -1056,33 +1395,79 @@ export default function App() {
                     {reviewReady && currentKf?.removed && (
                       <div className="frame-removed-overlay">
                         <div className="t">This frame will be dropped from the recording</div>
-                        <div className="d">Nothing from this frame is sent to the model. Use this when a frame is entirely sensitive.</div>
-                        <button className="btn btn-navy-ghost btn-sm" style={{ background: '#fff' }} onClick={restoreFrame}>Keep this frame</button>
+                        <div className="d">
+                          Nothing from this frame is sent to the model. Use this when a frame is entirely sensitive.
+                        </div>
+                        <button
+                          className="btn btn-navy-ghost btn-sm"
+                          style={{ background: '#fff' }}
+                          onClick={restoreFrame}
+                        >
+                          Keep this frame
+                        </button>
                       </div>
                     )}
                     <div className="frame-caption">Redacted preview · original deleted after summary</div>
                   </div>
 
                   <div className="filmstrip-row">
-                    <button className="fs-nav" onClick={() => { if (reviewIndex > 0) goToFrame(reviewIndex - 1); }}>‹</button>
+                    <button
+                      className="fs-nav"
+                      onClick={() => {
+                        if (reviewIndex > 0) goToFrame(reviewIndex - 1);
+                      }}
+                    >
+                      ‹
+                    </button>
                     <div className="filmstrip">
                       {keyframesRef.current.map((kf, i) => (
-                        <button key={kf.timestamp} className={`fs-thumb${i === reviewIndex ? ' active' : ''}${kf.removed ? ' removed' : ''}`} onClick={() => goToFrame(i)}>
+                        <button
+                          key={kf.timestamp}
+                          className={`fs-thumb${i === reviewIndex ? ' active' : ''}${kf.removed ? ' removed' : ''}`}
+                          onClick={() => goToFrame(i)}
+                        >
                           <div className="num">{i + 1}</div>
                           {!kf.removed && kf.masks.length > 0 && <span className="marker" />}
                         </button>
                       ))}
                     </div>
-                    <button className="fs-nav" onClick={() => { if (reviewIndex < keyframesRef.current.length - 1) goToFrame(reviewIndex + 1); }}>›</button>
+                    <button
+                      className="fs-nav"
+                      onClick={() => {
+                        if (reviewIndex < keyframesRef.current.length - 1) goToFrame(reviewIndex + 1);
+                      }}
+                    >
+                      ›
+                    </button>
                   </div>
                 </div>
 
-                <div className="review-disclaimer">Automatic detection is best-effort and bounded by detection accuracy, it is not a guarantee. Review every frame yourself, mask anything the automatic pass missed, and drop any frame that shouldn't be sent at all.</div>
+                <div className="review-disclaimer">
+                  Automatic detection is best-effort and bounded by detection accuracy, it is not a guarantee. Review
+                  every frame yourself, mask anything the automatic pass missed, and drop any frame that shouldn&apos;t
+                  be sent at all.
+                </div>
 
                 <div className="review-actions">
-                  <button className="btn btn-ghost btn-md" onClick={() => { if (confirm('Discard this recording and return to the start?')) resetToReady(); }}>Discard</button>
-                  <div className="modelline">Generating with <b>{summaryModelLabel(summaryModel)}</b></div>
-                  <button className="btn btn-pink btn-md" onClick={() => { void generateSummary(); }}>Generate summary »</button>
+                  <button
+                    className="btn btn-ghost btn-md"
+                    onClick={() => {
+                      if (confirm('Discard this recording and return to the start?')) resetToReady();
+                    }}
+                  >
+                    Discard
+                  </button>
+                  <div className="modelline">
+                    Generating with <b>{summaryModelLabel(summaryModel)}</b>
+                  </div>
+                  <button
+                    className="btn btn-pink btn-md"
+                    onClick={() => {
+                      setSendConfirmVisible(true);
+                    }}
+                  >
+                    Generate summary »
+                  </button>
                 </div>
               </section>
 
@@ -1091,8 +1476,13 @@ export default function App() {
                 <div className="proc-wrap">
                   <div className="eyebrow">{procEyebrow}</div>
                   <h4 className="title">Turning your recording into a summary</h4>
-                  <div className="progressbar"><div className="fill" style={{ width: `${progressPct}%` }} /></div>
-                  <div className="progress-meta"><span>{progressLabel}</span><span className="pct">{progressPct}%</span></div>
+                  <div className="progressbar">
+                    <div className="fill" style={{ width: `${progressPct}%` }} />
+                  </div>
+                  <div className="progress-meta">
+                    <span>{progressLabel}</span>
+                    <span className="pct">{progressPct}%</span>
+                  </div>
                   <div className="proc-steps">
                     {[
                       'Reading on-screen text (OCR)',
@@ -1100,14 +1490,22 @@ export default function App() {
                       `Sending redacted frames to ${summaryModelLabel(summaryModel)}`,
                       'Generating summary from the frame sequence',
                     ].map((label, n) => (
-                      <div key={n} className={`proc-step${procStates[n] === 'active' ? ' active' : ''}${procStates[n] === 'done' ? ' done' : ''}`} data-pstep={n}>
-                        <span className="ico">{procStates[n] === 'done' ? '✓' : procStates[n] === 'active' ? '◜' : n + 1}</span>
+                      <div
+                        key={n}
+                        className={`proc-step${procStates[n] === 'active' ? ' active' : ''}${procStates[n] === 'done' ? ' done' : ''}`}
+                        data-pstep={n}
+                      >
+                        <span className="ico">
+                          {procStates[n] === 'done' ? '✓' : procStates[n] === 'active' ? '◜' : n + 1}
+                        </span>
                         <span className="lbl">{label}</span>
                       </div>
                     ))}
                   </div>
                   {rawTextFallback && (
-                    <button className="btn btn-ghost btn-sm" style={{ marginTop: 18 }} onClick={useRawTextInstead}>Use raw OCR text instead</button>
+                    <button className="btn btn-ghost btn-sm" style={{ marginTop: 18 }} onClick={useRawTextInstead}>
+                      Use raw OCR text instead
+                    </button>
                   )}
                 </div>
               </section>
@@ -1123,16 +1521,43 @@ export default function App() {
                 </div>
                 <div className="summary-card">
                   <div className="head">Resolution summary</div>
-                  <textarea className="summary-text" spellCheck value={summaryText} onChange={e => setSummaryText(e.target.value)} />
+                  <textarea
+                    className="summary-text"
+                    spellCheck
+                    value={summaryText}
+                    onChange={e => setSummaryText(e.target.value)}
+                  />
                 </div>
-                <div className="sent-privacy">Detected secrets and any regions you masked were burned out of the frames before generation. Original full-resolution screenshots never left this device.</div>
-                {saveNote && <div className="save-note" style={{ color: saveNote.isError ? 'var(--cn-red)' : '' }}>{saveNote.text}</div>}
+                <div className="sent-privacy">
+                  Detected secrets and any regions you masked were burned out of the frames before generation. Original
+                  full-resolution screenshots never left this device.
+                </div>
+                {saveNote && (
+                  <div className="save-note" style={{ color: saveNote.isError ? 'var(--cn-red)' : '' }}>
+                    {saveNote.text}
+                  </div>
+                )}
                 <div className="sent-actions">
-                  <button className="btn btn-soft btn-md coming-soon is-disabled" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>Push to Ticket</button>
-                  <button className="btn btn-navy-ghost btn-md" onClick={onSave}>Save to file</button>
-                  <button className="btn btn-navy-ghost btn-md" onClick={onCopySummary}>{copiedSummary ? 'Copied!' : 'Copy'}</button>
-                  <button className="btn btn-ghost btn-md" onClick={() => window.cardonetCapture.openFolder()}>Open folder</button>
-                  <button className="btn btn-ghost btn-md" style={{ marginLeft: 'auto' }} onClick={resetToReady}>New recording</button>
+                  <button
+                    className="btn btn-soft btn-md coming-soon is-disabled"
+                    data-tip="Coming soon"
+                    aria-disabled="true"
+                    onClick={e => e.preventDefault()}
+                  >
+                    Push to Ticket
+                  </button>
+                  <button className="btn btn-navy-ghost btn-md" onClick={onSave}>
+                    Save to file
+                  </button>
+                  <button className="btn btn-navy-ghost btn-md" onClick={onCopySummary}>
+                    {copiedSummary ? 'Copied!' : 'Copy'}
+                  </button>
+                  <button className="btn btn-ghost btn-md" onClick={() => window.cardonetCapture.openFolder()}>
+                    Open folder
+                  </button>
+                  <button className="btn btn-ghost btn-md" style={{ marginLeft: 'auto' }} onClick={resetToReady}>
+                    New recording
+                  </button>
                 </div>
               </section>
             </div>
@@ -1142,29 +1567,83 @@ export default function App() {
               <div>
                 <div className="rr-title">Summary Model</div>
                 <div className="model-list">
-                  <button className={`model-item${summaryModel === 'claude' ? ' active' : ''}`} data-model="claude" onClick={() => applySummaryModel('claude')}>
-                    <span className="radio" /><div className="grow"><div className="name">Claude</div></div><span className="tag default">Default</span>
+                  <button
+                    className={`model-item${summaryModel === 'claude' ? ' active' : ''}`}
+                    data-model="claude"
+                    onClick={() => applySummaryModel('claude')}
+                  >
+                    <span className="radio" />
+                    <div className="grow">
+                      <div className="name">Claude</div>
+                    </div>
+                    <span className="tag default">Default</span>
                   </button>
-                  <button className="model-item is-disabled coming-soon" data-model="chatgpt" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-                    <span className="radio" /><div className="grow"><div className="name">ChatGPT</div></div><span className="tag cloud">Cloud</span>
+                  <button
+                    className="model-item is-disabled coming-soon"
+                    data-model="chatgpt"
+                    data-tip="Coming soon"
+                    aria-disabled="true"
+                    onClick={e => e.preventDefault()}
+                  >
+                    <span className="radio" />
+                    <div className="grow">
+                      <div className="name">ChatGPT</div>
+                    </div>
+                    <span className="tag cloud">Cloud</span>
                   </button>
-                  <button className="model-item is-disabled coming-soon" data-model="gemini" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-                    <span className="radio" /><div className="grow"><div className="name">Gemini</div></div><span className="tag cloud">Cloud</span>
+                  <button
+                    className="model-item is-disabled coming-soon"
+                    data-model="gemini"
+                    data-tip="Coming soon"
+                    aria-disabled="true"
+                    onClick={e => e.preventDefault()}
+                  >
+                    <span className="radio" />
+                    <div className="grow">
+                      <div className="name">Gemini</div>
+                    </div>
+                    <span className="tag cloud">Cloud</span>
                   </button>
-                  <button className={`model-item${summaryModel === 'ollama' ? ' active' : ''}`} data-model="ollama" onClick={() => applySummaryModel('ollama')}>
-                    <span className="radio" /><div className="grow"><div className="name">Run locally with Ollama</div></div><span className="tag private">Private</span>
+                  <button
+                    className={`model-item${summaryModel === 'ollama' ? ' active' : ''}`}
+                    data-model="ollama"
+                    onClick={() => applySummaryModel('ollama')}
+                  >
+                    <span className="radio" />
+                    <div className="grow">
+                      <div className="name">Run locally with Ollama</div>
+                    </div>
+                    <span className="tag private">Private</span>
                   </button>
                 </div>
               </div>
               <div className="rr-divider" />
               <div>
-                <div className="rr-title row">Always Protected<span className="auto"><span className="dot" />Automatic</span></div>
-                <div className="protect-list">
-                  <div className="protect-row"><span className="check">✓</span><span className="t">Passwords &amp; credential fields</span></div>
-                  <div className="protect-row"><span className="check">✓</span><span className="t">API keys, tokens &amp; connection strings</span></div>
-                  <div className="protect-row"><span className="check">✓</span><span className="t">Usernames, emails &amp; PII</span></div>
+                <div className="rr-title row">
+                  Always Protected
+                  <span className="auto">
+                    <span className="dot" />
+                    Automatic
+                  </span>
                 </div>
-                <div className="protect-foot">Detection runs on every recording before frames reach the model. It is best-effort and bounded by detection accuracy, not a guarantee. Review the flagged frames before you generate.</div>
+                <div className="protect-list">
+                  <div className="protect-row">
+                    <span className="check">✓</span>
+                    <span className="t">Passwords &amp; credential fields</span>
+                  </div>
+                  <div className="protect-row">
+                    <span className="check">✓</span>
+                    <span className="t">API keys, tokens &amp; connection strings</span>
+                  </div>
+                  <div className="protect-row">
+                    <span className="check">✓</span>
+                    <span className="t">Usernames, emails &amp; PII</span>
+                  </div>
+                </div>
+                <div className="protect-foot">
+                  Detection runs on every recording before frames reach the model. It is best-effort and bounded by
+                  detection accuracy, not a guarantee. Review the flagged frames before you generate.
+                </div>
               </div>
             </aside>
           </div>
@@ -1173,21 +1652,59 @@ export default function App() {
           <div className="screen-settings">
             <div className="settings-inner">
               <div className="eyebrow">Settings</div>
-              <h4 className="title" style={{ marginBottom: 6 }}>Integrations &amp; capture</h4>
+              <h4 className="title" style={{ marginBottom: 6 }}>
+                Integrations &amp; capture
+              </h4>
 
               <div className="settings-section-label">Summary Model Providers</div>
               <div className="model-list">
-                <button className={`model-item${summaryModel === 'claude' ? ' active' : ''}`} data-model="claude" onClick={() => applySummaryModel('claude')}>
-                  <span className="radio" /><div className="grow"><div className="name">Claude</div></div><span className="tag default">Default</span>
+                <button
+                  className={`model-item${summaryModel === 'claude' ? ' active' : ''}`}
+                  data-model="claude"
+                  onClick={() => applySummaryModel('claude')}
+                >
+                  <span className="radio" />
+                  <div className="grow">
+                    <div className="name">Claude</div>
+                  </div>
+                  <span className="tag default">Default</span>
                 </button>
-                <button className="model-item is-disabled coming-soon" data-model="chatgpt" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-                  <span className="radio" /><div className="grow"><div className="name">ChatGPT</div></div><span className="tag cloud">Cloud</span>
+                <button
+                  className="model-item is-disabled coming-soon"
+                  data-model="chatgpt"
+                  data-tip="Coming soon"
+                  aria-disabled="true"
+                  onClick={e => e.preventDefault()}
+                >
+                  <span className="radio" />
+                  <div className="grow">
+                    <div className="name">ChatGPT</div>
+                  </div>
+                  <span className="tag cloud">Cloud</span>
                 </button>
-                <button className="model-item is-disabled coming-soon" data-model="gemini" data-tip="Coming soon" aria-disabled="true" onClick={e => e.preventDefault()}>
-                  <span className="radio" /><div className="grow"><div className="name">Gemini</div></div><span className="tag cloud">Cloud</span>
+                <button
+                  className="model-item is-disabled coming-soon"
+                  data-model="gemini"
+                  data-tip="Coming soon"
+                  aria-disabled="true"
+                  onClick={e => e.preventDefault()}
+                >
+                  <span className="radio" />
+                  <div className="grow">
+                    <div className="name">Gemini</div>
+                  </div>
+                  <span className="tag cloud">Cloud</span>
                 </button>
-                <button className={`model-item${summaryModel === 'ollama' ? ' active' : ''}`} data-model="ollama" onClick={() => applySummaryModel('ollama')}>
-                  <span className="radio" /><div className="grow"><div className="name">Run locally with Ollama</div></div><span className="tag private">Private</span>
+                <button
+                  className={`model-item${summaryModel === 'ollama' ? ' active' : ''}`}
+                  data-model="ollama"
+                  onClick={() => applySummaryModel('ollama')}
+                >
+                  <span className="radio" />
+                  <div className="grow">
+                    <div className="name">Run locally with Ollama</div>
+                  </div>
+                  <span className="tag private">Private</span>
                 </button>
               </div>
 
@@ -1196,19 +1713,47 @@ export default function App() {
                 <div className="form-grid">
                   <div className="form-group">
                     <label htmlFor="s-ollama-url">Ollama URL</label>
-                    <input id="s-ollama-url" type="text" placeholder="http://localhost:11434" value={ollamaUrl} onChange={e => setOllamaUrl(e.target.value)} />
+                    <input
+                      id="s-ollama-url"
+                      type="text"
+                      placeholder="http://localhost:11434"
+                      value={ollamaUrl}
+                      onChange={e => setOllamaUrl(e.target.value)}
+                    />
                   </div>
                   <div className="form-group">
                     <label htmlFor="s-vlm-model">Vision model</label>
-                    <input id="s-vlm-model" type="text" placeholder="llava" value={vlmModel} onChange={e => setVlmModel(e.target.value)} />
+                    <input
+                      id="s-vlm-model"
+                      type="text"
+                      placeholder="llava"
+                      value={vlmModel}
+                      onChange={e => setVlmModel(e.target.value)}
+                    />
                   </div>
                   <div className="form-group">
                     <label htmlFor="s-text-model">Text model</label>
-                    <input id="s-text-model" type="text" placeholder="llama3" value={textModel} onChange={e => setTextModel(e.target.value)} />
+                    <input
+                      id="s-text-model"
+                      type="text"
+                      placeholder="llama3"
+                      value={textModel}
+                      onChange={e => setTextModel(e.target.value)}
+                    />
                   </div>
                   <div className="form-group">
-                    <label htmlFor="s-threshold">Change threshold <span className="hint">(0 to 10)</span></label>
-                    <input id="s-threshold" type="number" min={0} max={10} placeholder="5" value={threshold} onChange={e => setThreshold(e.target.value)} />
+                    <label htmlFor="s-threshold">
+                      Change threshold <span className="hint">(0 to 10)</span>
+                    </label>
+                    <input
+                      id="s-threshold"
+                      type="number"
+                      min={0}
+                      max={10}
+                      placeholder="5"
+                      value={threshold}
+                      onChange={e => setThreshold(e.target.value)}
+                    />
                   </div>
                 </div>
               </div>
@@ -1219,41 +1764,95 @@ export default function App() {
                   <span className="swatch" style={{ background: 'var(--cn-gradient)' }} />
                   <div className="grow">
                     <div className="name">HaloPSA</div>
-                    <div className="detail">Not connected - connectivity is coming soon. Recording and summaries work without it.</div>
+                    <div className="detail">
+                      Not connected - connectivity is coming soon. Recording and summaries work without it.
+                    </div>
                   </div>
-                  <button className="btn btn-pink btn-sm coming-soon is-disabled" data-tip="Coming soon" aria-disabled="true" style={{ boxShadow: 'none' }} onClick={e => e.preventDefault()}>Connect</button>
+                  <button
+                    className="btn btn-pink btn-sm coming-soon is-disabled"
+                    data-tip="Coming soon"
+                    aria-disabled="true"
+                    style={{ boxShadow: 'none' }}
+                    onClick={e => e.preventDefault()}
+                  >
+                    Connect
+                  </button>
                 </div>
               </div>
 
               <div className="settings-section-label">Activity Capture</div>
               <div className="settings-card">
-                <p style={{ fontSize: 12.5, color: 'var(--slate)', lineHeight: 1.5, marginBottom: 4 }}>Alongside video: which tool was in focus, for how long, and what was on screen. Runs locally; all sources feed the summary prompt after being scrubbed for client names and tenant IDs.</p>
+                <p style={{ fontSize: 12.5, color: 'var(--slate)', lineHeight: 1.5, marginBottom: 4 }}>
+                  Alongside video: which tool was in focus, for how long, and what was on screen. Runs locally; all
+                  sources feed the summary prompt after being scrubbed for client names and tenant IDs.
+                </p>
                 <div className="check-row">
-                  <input id="s-capture-window" type="checkbox" checked={captureWindowEnabled} onChange={e => setCaptureWindowEnabled(e.target.checked)} />
+                  <input
+                    id="s-capture-window"
+                    type="checkbox"
+                    checked={captureWindowEnabled}
+                    onChange={e => setCaptureWindowEnabled(e.target.checked)}
+                  />
                   <div className="body">
                     <label htmlFor="s-capture-window">Window / app activity</label>
-                    <p>Primary source - tracks focused app + dwell time, coarsely categorized (remote / admin console / PSA / terminal).</p>
+                    <p>
+                      Primary source - tracks focused app + dwell time, coarsely categorized (remote / admin console /
+                      PSA / terminal).
+                    </p>
                   </div>
                 </div>
                 <div className="check-row">
-                  <input id="s-capture-terminal" type="checkbox" checked={captureTerminalEnabled} onChange={e => setCaptureTerminalEnabled(e.target.checked)} />
+                  <input
+                    id="s-capture-terminal"
+                    type="checkbox"
+                    checked={captureTerminalEnabled}
+                    onChange={e => setCaptureTerminalEnabled(e.target.checked)}
+                  />
                   <div className="body">
                     <label htmlFor="s-capture-terminal">Terminal commands (PowerShell)</label>
-                    <p>Captures locally-run PowerShell commands. Commands run inside RDP / remote sessions aren't seen, but the window-activity source still shows a remote session was focused, and for how long. cmd.exe is visible as a focused window, not by command text.</p>
+                    <p>
+                      Captures locally-run PowerShell commands. Commands run inside RDP / remote sessions aren&apos;t
+                      seen, but the window-activity source still shows a remote session was focused, and for how long.
+                      cmd.exe is visible as a focused window, not by command text.
+                    </p>
                   </div>
                 </div>
                 <div className="check-row">
-                  <input id="s-transcript-enabled" type="checkbox" checked={transcriptEnabled} onChange={e => setTranscriptEnabled(e.target.checked)} />
+                  <input
+                    id="s-transcript-enabled"
+                    type="checkbox"
+                    checked={transcriptEnabled}
+                    onChange={e => setTranscriptEnabled(e.target.checked)}
+                  />
                   <div className="body">
                     <label htmlFor="s-transcript-enabled">Also capture command output (PowerShell transcript)</label>
-                    <p>Writes a transcript file to your temp folder. Requires a one-time snippet in your PowerShell profile - <button className="btn btn-navy-ghost btn-sm" type="button" style={{ padding: '4px 10px' }} onClick={copyTranscriptSnippet}>{transcriptSnippetCopied ? 'Copied!' : 'Copy setup snippet'}</button></p>
+                    <p>
+                      Writes a transcript file to your temp folder. Requires a one-time snippet in your PowerShell
+                      profile -{' '}
+                      <button
+                        className="btn btn-navy-ghost btn-sm"
+                        type="button"
+                        style={{ padding: '4px 10px' }}
+                        onClick={copyTranscriptSnippet}
+                      >
+                        {transcriptSnippetCopied ? 'Copied!' : 'Copy setup snippet'}
+                      </button>
+                    </p>
                   </div>
                 </div>
                 <div className="check-row">
-                  <input id="s-capture-browser" type="checkbox" checked={captureBrowserEnabled} onChange={e => setCaptureBrowserEnabled(e.target.checked)} />
+                  <input
+                    id="s-capture-browser"
+                    type="checkbox"
+                    checked={captureBrowserEnabled}
+                    onChange={e => setCaptureBrowserEnabled(e.target.checked)}
+                  />
                   <div className="body">
                     <label htmlFor="s-capture-browser">Browser activity (Chrome / Edge)</label>
-                    <p>Detects which admin portals and sites were used during the recording. The most sensitive source - turn off if not needed.</p>
+                    <p>
+                      Detects which admin portals and sites were used during the recording. The most sensitive source -
+                      turn off if not needed.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1262,14 +1861,30 @@ export default function App() {
               <div className="settings-card">
                 <div className="form-grid">
                   <div className="form-group full">
-                    <label htmlFor="s-client-names">Client names to redact <span className="hint">(comma-separated)</span></label>
-                    <input id="s-client-names" type="text" placeholder="Acme Corp, Northwind Finance" value={clientNames} onChange={e => setClientNames(e.target.value)} />
+                    <label htmlFor="s-client-names">
+                      Client names to redact <span className="hint">(comma-separated)</span>
+                    </label>
+                    <input
+                      id="s-client-names"
+                      type="text"
+                      placeholder="Acme Corp, Northwind Finance"
+                      value={clientNames}
+                      onChange={e => setClientNames(e.target.value)}
+                    />
                   </div>
                 </div>
               </div>
 
               <div style={{ marginTop: 20 }}>
-                <button className="btn btn-pink btn-md" onClick={() => { saveSettings(); setScreen('work'); }}>Save settings</button>
+                <button
+                  className="btn btn-pink btn-md"
+                  onClick={() => {
+                    saveSettings();
+                    setScreen('work');
+                  }}
+                >
+                  Save settings
+                </button>
               </div>
             </div>
           </div>
@@ -1278,50 +1893,143 @@ export default function App() {
           <div className="screen-templates">
             <div className="templates-inner">
               <div className="eyebrow">Summary Templates</div>
-              <h4 className="title" style={{ marginBottom: 6 }}>Summary Templates</h4>
-              <p className="subnote" style={{ maxWidth: 640 }}>Layer extra instructions for the AI summary to follow.</p>
+              <h4 className="title" style={{ marginBottom: 6 }}>
+                Summary Templates
+              </h4>
+              <p className="subnote" style={{ maxWidth: 640 }}>
+                Layer extra instructions for the AI summary to follow.
+              </p>
 
               <div className="tpl-grid">
                 <div>
                   <div className="settings-section-label">Your Templates</div>
                   <div className="tpl-list">
-                    <div className={`tpl-item${activeTemplateId === '' ? ' active' : ''}`} onClick={() => selectTemplate('')}>
+                    <div
+                      className={`tpl-item${activeTemplateId === '' ? ' active' : ''}`}
+                      onClick={() => selectTemplate('')}
+                    >
                       <span className="radio" />
-                      <div className="grow"><div className="name">No template</div><div className="sub">Baseline rules only</div></div>
+                      <div className="grow">
+                        <div className="name">No template</div>
+                        <div className="sub">Baseline rules only</div>
+                      </div>
                     </div>
                     {templates.map(t => (
-                      <div key={t.id} className={`tpl-item${t.id === activeTemplateId ? ' active' : ''}`} onClick={() => selectTemplate(t.id)}>
+                      <div
+                        key={t.id}
+                        className={`tpl-item${t.id === activeTemplateId ? ' active' : ''}`}
+                        onClick={() => selectTemplate(t.id)}
+                      >
                         <span className="radio" />
-                        <div className="grow"><div className="name">{t.title || 'Untitled'}</div></div>
+                        <div className="grow">
+                          <div className="name">{t.title || 'Untitled'}</div>
+                        </div>
                         <div className="tpl-actions">
-                          <button type="button" className="tpl-mini" onClick={e => { e.stopPropagation(); openTemplateEditor(t.id); }}>Edit</button>
-                          <button type="button" className="tpl-mini danger" onClick={e => { e.stopPropagation(); deleteTemplate(t.id); }}>Delete</button>
+                          <button
+                            type="button"
+                            className="tpl-mini"
+                            onClick={e => {
+                              e.stopPropagation();
+                              openTemplateEditor(t.id);
+                            }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="tpl-mini danger"
+                            onClick={e => {
+                              e.stopPropagation();
+                              deleteTemplate(t.id);
+                            }}
+                          >
+                            Delete
+                          </button>
                         </div>
                       </div>
                     ))}
                   </div>
-                  <button className="btn btn-navy-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => openTemplateEditor(null)}>+ New template</button>
+                  <button
+                    className="btn btn-navy-ghost btn-sm"
+                    style={{ marginTop: 10 }}
+                    onClick={() => openTemplateEditor(null)}
+                  >
+                    + New template
+                  </button>
                 </div>
 
                 <div>
-                  <div className="settings-section-label">{editingId ? `Editing: ${templates.find(t => t.id === editingId)?.title || 'Untitled'}` : 'New template'}</div>
+                  <div className="settings-section-label">
+                    {editingId
+                      ? `Editing: ${templates.find(t => t.id === editingId)?.title || 'Untitled'}`
+                      : 'New template'}
+                  </div>
                   <div className="settings-card">
                     <div className="form-group">
                       <label htmlFor="tpl-title">Title</label>
-                      <input id="tpl-title" type="text" placeholder="e.g. Printer troubleshooting note" autoComplete="off" spellCheck={false}
+                      <input
+                        id="tpl-title"
+                        type="text"
+                        placeholder="e.g. Printer troubleshooting note"
+                        autoComplete="off"
+                        spellCheck={false}
                         className={tplTitleError ? 'error' : ''}
-                        value={tplTitle} onChange={e => { setTplTitle(e.target.value); setTplTitleError(false); }} />
+                        value={tplTitle}
+                        onChange={e => {
+                          setTplTitle(e.target.value);
+                          setTplTitleError(false);
+                        }}
+                      />
                     </div>
                     <div className="form-group" style={{ marginTop: 12 }}>
-                      <label htmlFor="tpl-content">Content <span className="hint">markdown or plain text - appended to the baseline rules</span></label>
-                      <textarea id="tpl-content" rows={10} placeholder="e.g. Organise the actions under headings: Diagnosis, Steps taken, Resolution. Keep it under 8 bullets." value={tplContent} onChange={e => setTplContent(e.target.value)} />
+                      <label htmlFor="tpl-content">
+                        Content <span className="hint">markdown or plain text - appended to the baseline rules</span>
+                      </label>
+                      <textarea
+                        id="tpl-content"
+                        rows={10}
+                        placeholder="e.g. Organise the actions under headings: Diagnosis, Steps taken, Resolution. Keep it under 8 bullets."
+                        value={tplContent}
+                        onChange={e => setTplContent(e.target.value)}
+                      />
                     </div>
-                    <input type="file" ref={tplFileInputRef} accept=".md,.markdown,text/markdown,text/plain" className="hidden" onChange={e => { void loadTemplateFile(e.target.files?.[0]); e.target.value = ''; }} />
+                    <input
+                      type="file"
+                      ref={tplFileInputRef}
+                      accept=".md,.markdown,text/markdown,text/plain"
+                      className="hidden"
+                      onChange={e => {
+                        void loadTemplateFile(e.target.files?.[0]);
+                        e.target.value = '';
+                      }}
+                    />
                     <div className="tpl-editor-actions">
-                      <button className="btn btn-navy-ghost btn-sm" type="button" onClick={() => tplFileInputRef.current?.click()}>Upload .md</button>
+                      <button
+                        className="btn btn-navy-ghost btn-sm"
+                        type="button"
+                        onClick={() => tplFileInputRef.current?.click()}
+                      >
+                        Upload .md
+                      </button>
                       <span className="tpl-file-note">{tplFileNote}</span>
-                      {editingId && <button className="tpl-mini-delete btn btn-ghost btn-sm" type="button" style={{ marginLeft: 'auto' }} onClick={() => deleteTemplate(editingId)}>Delete</button>}
-                      <button className="btn btn-pink btn-sm" type="button" style={!editingId ? { marginLeft: 'auto' } : undefined} onClick={saveTemplate}>Save template</button>
+                      {editingId && (
+                        <button
+                          className="tpl-mini-delete btn btn-ghost btn-sm"
+                          type="button"
+                          style={{ marginLeft: 'auto' }}
+                          onClick={() => deleteTemplate(editingId)}
+                        >
+                          Delete
+                        </button>
+                      )}
+                      <button
+                        className="btn btn-pink btn-sm"
+                        type="button"
+                        style={!editingId ? { marginLeft: 'auto' } : undefined}
+                        onClick={saveTemplate}
+                      >
+                        Save template
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1333,21 +2041,72 @@ export default function App() {
 
       {/* ── Overlays ──────────────────────────────────────────────────── */}
       <div className={`rec-outline${recordingOverlayVisible ? '' : ' hidden'}`} />
-      <div className={`rec-badge${recordingOverlayVisible ? '' : ' hidden'}`}><span className="dot" />REC <span className="mono">{timerText}</span></div>
+      <div className={`rec-badge${recordingOverlayVisible ? '' : ' hidden'}`}>
+        <span className="dot" />
+        REC <span className="mono">{timerText}</span>
+      </div>
 
       <div className={`overlay${stage === 'countdown' ? '' : ' hidden'}`}>
         <div className="countdown-ring">{countdownN}</div>
-        <div className="countdown-sub">Recording {captureSource === 'window' ? 'the selected window' : 'the entire screen'} in…</div>
-        <button className="btn btn-ghost btn-sm" style={{ marginTop: 16, background: 'rgba(255,255,255,.16)', color: '#fff' }} onClick={cancelCountdown}>Cancel</button>
+        <div className="countdown-sub">
+          Recording {captureSource === 'window' ? 'the selected window' : 'the entire screen'} in…
+        </div>
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ marginTop: 16, background: 'rgba(255,255,255,.16)', color: '#fff' }}
+          onClick={cancelCountdown}
+        >
+          Cancel
+        </button>
       </div>
 
       <div className={`modal-scrim${durationModalVisible ? '' : ' hidden'}`}>
         <div className="modal-card">
           <div className="badge">⏱</div>
           <h3>This is a long recording</h3>
-          <p>You've been recording for over 30 minutes. Long recordings capture more keyframes, which take longer to review and to summarise. Recording is still running, this is just a heads-up.</p>
+          <p>
+            You&apos;ve been recording for over 30 minutes. Long recordings capture more keyframes, which take longer to
+            review and to summarise. Recording is still running, this is just a heads-up.
+          </p>
           <div className="modal-actions">
-            <button className="btn btn-pink btn-sm" onClick={() => setDurationModalVisible(false)}>Got it, keep recording</button>
+            <button className="btn btn-pink btn-sm" onClick={() => setDurationModalVisible(false)}>
+              Got it, keep recording
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className={`modal-scrim${sendConfirmVisible ? '' : ' hidden'}`}>
+        <div className="modal-card">
+          <div className="badge">🔒</div>
+          <h3>Confirm redaction before sending</h3>
+          <p>
+            {totalMaskCount()} region{totalMaskCount() === 1 ? '' : 's'} auto-masked across{' '}
+            {keyframesRef.current.filter(kf => !kf.removed).length} frame
+            {keyframesRef.current.filter(kf => !kf.removed).length === 1 ? '' : 's'}.
+            {unreviewedFrameCount() > 0 && (
+              <>
+                {' '}
+                <b>
+                  {unreviewedFrameCount()} frame{unreviewedFrameCount() === 1 ? '' : 's'} not yet reviewed.
+                </b>{' '}
+                Automatic detection is best-effort, not a guarantee -- review every frame before sending.
+              </>
+            )}
+          </p>
+          <div className="modal-actions">
+            <button className="btn btn-ghost btn-sm" onClick={() => setSendConfirmVisible(false)}>
+              Go back to review
+            </button>
+            <button
+              className="btn btn-pink btn-sm"
+              onClick={() => {
+                setSendConfirmVisible(false);
+                void generateSummary();
+              }}
+            >
+              Send to {summaryModelLabel(summaryModel)}
+            </button>
           </div>
         </div>
       </div>

@@ -123,8 +123,20 @@ ipcMain.handle('generate', (_e, request: GenerateRequest) => {
   return providers.generate(request);
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  // `mainWindow` is read at call time (not captured now), so this still
+  // targets the real window even though createWindow() just reassigned it.
+  eventsCapture.setDegradedHandler(message => mainWindow?.webContents.send('events:degraded', message));
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// Belt-and-braces: stopWindowPolling() already kills the poll process on a
+// normal Stop-recording click, but a quit mid-recording (or a crash) must
+// not leave an orphaned powershell.exe behind.
+app.on('before-quit', () => {
+  eventsCapture.shutdown();
 });

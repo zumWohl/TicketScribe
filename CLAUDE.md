@@ -5,8 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```powershell
-npm install           # install dependencies (run once after cloning) -- also vendors tesseract assets (postinstall)
-npm run rebuild        # rebuild better-sqlite3 for Electron's Node ABI (one-time, needed for browser-history capture)
+npm install           # install dependencies (run once after cloning) -- postinstall also vendors
+                       # tesseract assets AND rebuilds better-sqlite3 for Electron's Node ABI
+npm run rebuild        # force-rebuild better-sqlite3 manually (rarely needed; postinstall already does this)
 npm start              # launch the app (electron-vite dev, hot reload)
 npm run dev            # same, with the Node inspector attached
 npm run dist           # build + package an NSIS installer (dist/CardonetCapture-Setup-<version>-x64.exe)
@@ -27,6 +28,7 @@ via `electron-vite`) with the renderer sandboxed: `contextIsolation: true`,
 through a `contextBridge`-exposed `window.cardonetCapture` API.
 
 **Source layout:**
+
 - `src/main/` — main process. `index.ts` hosts the IPC handlers
   (`get-sources`, `save-summary`, `open-folder`, `events:start`,
   `events:stop`, `events:get-transcript-snippet`, `generate`) and loads the
@@ -82,14 +84,20 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
    OCR and as the masking source, held in a `ref`, not React state — these
    are heavy, mutable objects). The downscaled `dataUrl` sent to the
    model is derived only at generation time by `maskAndDownscale()`
-   (`lib/redact.ts`), *after* redaction masks are applied to the full-res
+   (`lib/redact.ts`), _after_ redaction masks are applied to the full-res
    canvas. Don't downscale the `canvas` field itself; OCR accuracy depends
    on it staying full-res.
 
 2. **Frame deduplication** (`lib/hash.ts`'s `aHash`/`hamming`) — pure-JS
-   average perceptual hash over an 8×8 `OffscreenCanvas` downscale. A frame
-   is only kept as a keyframe when its Hamming distance from the previous
-   kept frame exceeds the configured threshold (default 5 bits out of 64).
+   average perceptual hash over an 8×8 `OffscreenCanvas` downscale. The
+   keep/drop decision itself is `shouldKeepAsKeyframe(hash, lastHash,
+threshold)` (extracted out of `App.tsx`'s capture loop so it's unit-testable
+   without a canvas): keep if there's no prior hash yet, or if the Hamming
+   distance from the previous kept frame is strictly greater than the
+   configured threshold (`clampThreshold`'s 0-10 range, default 5 bits out of
+   64). Note `aHash` hashes any uniform-color frame to all 1s (zero variance
+   around its own mean) — it can't distinguish two different _solid_ colors
+   from each other, only genuine on-screen change.
 
 3. **OCR** (`lib/ocr.ts`) — a single `tesseract.js` worker is created
    lazily on first use and reused across all keyframes.
@@ -151,19 +159,28 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
      PowerShell child process polls the foreground window via a
      `user32.dll` P/Invoke snippet (`WINDOW_POLL_SCRIPT`). Focus-change
      events carry `durationMs` and a coarse `category`
-     (`remote`/`admin-console`/`psa`/`terminal`/`other`).
+     (`remote`/`admin-console`/`psa`/`terminal`/`other`). **Supervised**: an
+     unexpected exit/crash mid-recording respawns it (up to
+     `MAX_POLL_RESTARTS`, currently 3); exceeding that calls the
+     `setDegradedHandler()` callback, which `main/index.ts` wires to
+     `events:degraded` over IPC so the renderer can show a warning during
+     the recording stage (other activity sources and the video are
+     unaffected). `shutdown()` force-kills the poll process on `before-quit`
+     so it never outlives the app, independent of whether a recording is
+     active.
    - **Terminal commands** — PowerShell only, via a PSReadLine
      history-file line-count diff. An **opt-in** transcript mode
-     (`Start-Transcript`) captures command *output* too, via a one-time
+     (`Start-Transcript`) captures command _output_ too, via a one-time
      profile snippet (`getTranscriptProfileSnippet()`). **cmd.exe command
      text is not captured** (visible as a focused window only, via the
      window-activity source).
    - **Browser activity (Chrome/Edge)** — copies the locked `History`
      SQLite file to a temp path, classifies each visit
      (`admin-portal`/`psa`/`kb-docs`/`other`). Requires the native
-     `better-sqlite3` module, rebuilt via `npm run rebuild` — wrapped in a
-     `try/catch` at require time so a missing/unbuilt module makes
-     browser-history capture silently no-op rather than crashing the app.
+     `better-sqlite3` module, rebuilt automatically via `postinstall`'s
+     `electron-builder install-app-deps` call — wrapped in a `try/catch` at
+     require time so a missing/unbuilt module makes browser-history capture
+     silently no-op rather than crashing the app.
    - **Scrubbing** (`lib/scrub-timeline.ts`) — masks GUID-shaped tenant/
      object IDs, emails, password/username/secret assignments, API-key-like
      tokens, and configured client names. Applied to every activity-timeline
@@ -171,7 +188,19 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
      after OCR runs**. At generation, `maskedOcrText()` additionally
      **drops any OCR word whose bbox falls under a redaction mask** and
      re-scrubs — the raw-OCR/fallback text goes through the same redaction
-     gate as the pixels.
+     gate as the pixels. **`scrubText()`'s regexes run in a fixed order
+     (password → username → API-key → GUID → email)**, chained via
+     sequential `.replace()` calls, found while writing
+     `scrub-timeline.test.ts`: `API_KEY_RE`'s bare `[A-Za-z0-9_-]{32,}`
+     catch-all runs before `GUID_RE` and a standard 8-4-4-4-12 GUID is always
+     36 chars of exactly that character set, so it's consumed there first —
+     the value still gets redacted (`[redacted]`, not `[tenant-id]`), so
+     this is a labeling quirk, not a leak, but `GUID_RE` is effectively
+     unreachable for real GUIDs today. Likewise `USERNAME_RE`'s
+     `user=<value>` shape greedily matches a literal URL query string like
+     `?user=jdoe@example.com` before `EMAIL_RE` gets a turn. Pre-existing
+     behavior (1:1 port, no logic change) — don't "fix" the regex order
+     without separately confirming it doesn't change what gets redacted.
 
 6. **Region masking / Review & redact** (`lib/redact.ts` + the review
    stage in `App.tsx`) — after Stop, `analyzeFrames()` OCRs every frame and
@@ -184,15 +213,30 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
    triggering a React re-render on `mouseup`). The preview `<canvas>` shows
    a **destructively masked render**. At generation, `maskAndDownscale()`
    copies the full-res canvas, `fillRect`s every mask on that full-res
-   copy, and **only then** downscales. Verified by `test/mask-verify.html`
-   (`npm test`), which loads a small CJS build of `lib/redact.ts`
-   (`npm run build:redact-cjs`, auto-run via `pretest`) and reads pixels
-   inside a masked region of the final dataUrl on both a below-cap and an
-   above-cap (downscaled) frame.
+   copy, and **only then** downscales. Verified by `npm test`
+   (`src/renderer/src/lib/redact.test.ts`), a Vitest test that imports
+   `redact.ts` directly (no separate build step) under
+   `// @vitest-environment jsdom` -- jsdom's `HTMLCanvasElement.getContext`
+   delegates to the `canvas` package (node-canvas, real Cairo-backed
+   rendering) when it's installed, so this is genuine pixel rendering, not a
+   stub. It reads pixels inside a masked region of the final dataUrl on both
+   a below-cap and an above-cap (downscaled) frame, reading the output back
+   via `canvas`'s own `loadImage()`/`createCanvas()` rather than jsdom's
+   `Image`, which sidesteps jsdom's separate (and separately finicky)
+   image-decoding integration. Each `Keyframe` also tracks `reviewed`
+   (set when it's been the active frame in the review filmstrip, via
+   `goToFrame()` or the initial frame `analyzeFrames()` lands on). Clicking
+   **"Generate summary »" does not send anything by itself** — it opens a
+   confirmation modal (`sendConfirmVisible`) stating the auto-masked region
+   count and, if any live frame hasn't been viewed yet, how many are still
+   unreviewed. Only the modal's "Send to `<model>`" button actually calls
+   `generateSummary()`; "Go back to review" just closes it. Covered by
+   `e2e/phase-review-send-gate.spec.ts` (drives the real buttons, not
+   `window.cardonetCapture.generate` directly).
 
 7. **State machine** — `screen` (`work`/`settings`/`templates`) and, within
    work, `stage` (`ready → countdown → recording → review → processing →
-   sent`) are React state in `App.tsx`, mirrored onto
+sent`) are React state in `App.tsx`, mirrored onto
    `document.body.dataset.screen`/`.stage` via `useEffect` so CSS visibility
    keeps working exactly as before the port.
 
@@ -280,11 +324,11 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
 - **Always scrub OCR text before it reaches a model.** `keyframes[i].ocrText`
   must be passed through `scrubText()` immediately after `runOCR()` returns.
 - **Redaction masking is destructive and must run on the full-res canvas
-  *before* downscaling.** Pipeline order is fixed: union auto + user masks
-  → `fillRect` them on a full-res copy of the canvas → *then* downscale.
+  _before_ downscaling.** Pipeline order is fixed: union auto + user masks
+  → `fillRect` them on a full-res copy of the canvas → _then_ downscale.
   Never mask after downscaling, never rely on a floating DOM overlay to
   hide pixels. Keep `lib/redact.ts` as the single shared implementation and
-  keep `npm test` (`test/mask-verify.html`) green.
+  keep `npm test` (`src/renderer/src/lib/redact.test.ts`) green.
 - Any raw-OCR/fallback text path must be routed through the same redaction
   gate (`maskedOcrText()` drops masked words, then `scrubText`).
 - Keyframe `canvas` elements are kept in a ref through the review stage;
@@ -292,7 +336,7 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
   light send-objects are built, and on discard/new.
 - PSReadLine history has no per-command timestamp — diffed terminal lines
   are bucketed at the recording's start time.
-- Commands run *inside* an RDP or other remote session are invisible to
+- Commands run _inside_ an RDP or other remote session are invisible to
   local capture; only that the remote-session window was focused (and for
   how long) is visible.
 - `events-capture.ts`'s `require('better-sqlite3')` is wrapped in
@@ -300,7 +344,7 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
 - Summaries are saved to
   `%USERPROFILE%\Documents\CardonetCapture\ticket-<id>-<timestamp>.txt` (no
   date/time in the note body or header). Image data still leaves the
-  device when Claude is selected. Region masks *are* burned out of the
+  device when Claude is selected. Region masks _are_ burned out of the
   sent pixels, so masked regions never reach Azure — but any
   **unmasked** pixels in a frame still leave the device with a Claude
   call. If a credential is visible on screen, mask it in the review stage
@@ -322,6 +366,7 @@ per-phase log, including deviations and real bugs found along the way); the
 legacy `main.js`/`main/events-capture.js`/`renderer/*` files no longer
 exist. Two rules from that run stay in force permanently, independent of
 the migration itself:
+
 - Redaction is safety-critical. `npm test` (mask-verify) must pass before
   any change to `lib/redact.ts` or the masking pipeline ships.
 - Do not upgrade `electron`, `better-sqlite3`, or `tesseract.js` without a

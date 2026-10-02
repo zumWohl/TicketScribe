@@ -18,8 +18,8 @@ export interface SummaryTemplate {
 
 export function loadTemplates(): SummaryTemplate[] {
   try {
-    const v = JSON.parse(ls('summaryTemplates', '[]'));
-    return Array.isArray(v) ? v : [];
+    const v = JSON.parse(ls('summaryTemplates', '[]')) as unknown;
+    return Array.isArray(v) ? (v as SummaryTemplate[]) : [];
   } catch {
     return [];
   }
