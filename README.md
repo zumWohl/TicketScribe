@@ -43,12 +43,19 @@ The workflow has three steps: Record, Review and redact, then Summary.
 2. Review and redact. Every keyframe is run through OCR (Tesseract) and scanned for sensitive values, which are pre-masked with pink boxes. You can draw new masks, drag, resize, or delete any box, zoom and pan to check small text, and drop whole frames. The preview always shows the masked render.
 3. Summary. The kept frames go to your chosen model and come back as a bullet-point work note. It is saved to `Documents/CardonetCapture/`.
 
-### Sensitive-data redaction
+### How redaction works
 
-- Auto-detection flags passwords, usernames, API keys and tokens, GUID tenant IDs, emails, and configured client names. It handles labelled values that OCR splits across several tokens, such as `Password = ...`, `User name: ...`, and `Secret credentials = ...`.
-- Masking is destructive and is applied to the full-resolution frame before it is downscaled. The pixels under every box, whether auto-detected or drawn by you, are overwritten rather than covered by an overlay. Masked regions never reach the model.
-- Masks are stored in full-resolution canvas coordinates, so they stay on target across zoom, pan, and window resizing.
-- An automated pixel-level test covers this. See `npm test`.
+Each kept keyframe goes through the same pipeline before it's eligible to be sent anywhere:
+
+1. **OCR** (Tesseract, vendored locally) reads every word on the frame and records each word's pixel bounding box.
+2. **Auto-detection** (`findSensitiveWords`) scans that OCR text for passwords, usernames, API keys and tokens, GUID tenant IDs, emails, and your configured client names, including labelled values OCR splits across several tokens (`Password = ...`, `User name: ...`, `Secret credentials = ...`). Each hit becomes a pink auto-mask at that word's bounding box.
+3. **Review** lets you draw additional masks (dashed navy), and drag, resize, or delete any box, auto or manual. You can also drop an entire frame. The preview canvas always shows the masked render, never the original.
+4. **Generation-time masking** (`maskAndDownscale`) is destructive, not an overlay: it unions every auto + manual mask, `fillRect`s each one onto a **full-resolution copy** of the frame, and only _then_ downscales for the model. The pixels underneath are overwritten before the image is ever shrunk or sent — there's no code path where an unmasked full-res frame leaves the review stage.
+5. **Text redaction** mirrors the pixel redaction: at generation time, `maskedOcrText()` drops any OCR word whose bounding box falls under a mask, then the remaining text is scrubbed again (`scrubText`) for GUIDs, emails, credential-shaped assignments, and client names — so the raw-OCR fallback path (if you ever click "Use raw OCR text instead" after a generation failure) can't leak what the pixel masks already hid.
+
+Masks are stored in full-resolution canvas coordinates, so they stay aligned with the underlying frame across zoom, pan, and window resizing — what you draw at any zoom level lands on the right pixels when it's burned in.
+
+**What this doesn't cover:** auto-detection is best-effort pattern matching over OCR output, not a guarantee — it can miss sensitive text that doesn't match its patterns, that OCR misread, or that's rendered as an image rather than selectable text. That's why the review stage exists: you're expected to look at every frame, not just trust the pink boxes. `npm test` (`test/mask-verify.html`) is an automated pixel-level check that redaction is actually destructive (the masked region's original pixels are gone from the final output, at both full-res and downscaled sizes) — it does not and cannot verify that auto-detection _found_ everything, only that whatever was masked is truly gone.
 
 ### What leaves your device
 
