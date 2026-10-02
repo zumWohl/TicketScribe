@@ -1,8 +1,9 @@
 // Ported from renderer/providers.js's ollamaGenerate + providers.ollama.
 // Runs in the main process now (decision 6) using Node's built-in fetch;
 // behavior/prompts/error messages are unchanged.
-import type { GenerateFrame } from '../../shared/generate';
+import type { GenerateFrame, GenerateRequest } from '../../shared/generate';
 import { buildTimelinePrompt, type FrameDescription } from './rules';
+import type { SummaryProvider } from './types';
 
 interface OllamaGeneratePayload {
   model: string;
@@ -100,3 +101,10 @@ export async function runOllamaPipeline(
   }
   return generateTextSummary(settings.url, settings.textModel, descriptions, activityTimelineText, templateContent);
 }
+
+export const ollamaProvider: SummaryProvider = {
+  generate(request: GenerateRequest): Promise<string> {
+    const settings = request.ollama || { url: 'http://localhost:11434', vlmModel: 'llava', textModel: 'llama3' };
+    return runOllamaPipeline(settings, request.frames, request.activityTimelineText, request.templateContent);
+  },
+};

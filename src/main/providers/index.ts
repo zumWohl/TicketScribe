@@ -1,9 +1,10 @@
 import { nativeImage } from 'electron';
-import type { GenerateRequest } from '../../shared/generate';
+import type { GenerateRequest, ProviderId } from '../../shared/generate';
 import { MODEL_IMAGE_MAX_DIMENSION } from '../../shared/image';
-import { runOllamaPipeline } from './ollama';
-import * as azure from './azure';
-import * as echo from './echo';
+import type { SummaryProvider } from './types';
+import { ollamaProvider } from './ollama';
+import { azureProvider } from './azure';
+import { echoProvider } from './echo';
 
 // Defense-in-depth: proves the renderer's downscale ran before sending (it
 // does NOT prove masking ran -- that's a pixel-level guarantee enforced by
@@ -20,30 +21,16 @@ function assertFramesWithinSizeCap(frames: GenerateRequest['frames']): void {
   }
 }
 
+// 'claude' is the UI-facing label for the sole cloud option, which is
+// always routed through the org's Azure OpenAI deployment -- see
+// providers/azure.ts and CLAUDE.md's "Azure OpenAI" section.
+const PROVIDERS: Record<ProviderId, SummaryProvider> = {
+  ollama: ollamaProvider,
+  claude: azureProvider,
+  echo: echoProvider,
+};
+
 export async function generate(request: GenerateRequest): Promise<string> {
   assertFramesWithinSizeCap(request.frames);
-
-  // Only reachable with the env var set (decision 10) -- never a normal
-  // runtime path, and the renderer never has a way to pick 'echo' itself.
-  if (request.provider === 'echo') {
-    if (process.env.CARDONETCAPTURE_TEST_PROVIDER !== 'echo') {
-      throw new Error('echo provider is not enabled.');
-    }
-    return echo.generate(request.frames, request.activityTimelineText);
-  }
-
-  if (request.provider === 'claude') {
-    // All cloud summaries are routed through the org's Azure deployment --
-    // endpoint/deployment/key are operator-configured via environment
-    // variables (set by IT, not the technician), never entered in Settings.
-    const settings = {
-      endpoint: process.env.AZURE_OPENAI_ENDPOINT || '',
-      deployment: process.env.AZURE_OPENAI_DEPLOYMENT || '',
-    };
-    return azure.generate(process.env.AZURE_OPENAI_KEY || '', settings, request.frames, request.activityTimelineText, request.templateContent);
-  }
-
-  // ollama
-  const settings = request.ollama || { url: 'http://localhost:11434', vlmModel: 'llava', textModel: 'llama3' };
-  return runOllamaPipeline(settings, request.frames, request.activityTimelineText, request.templateContent);
+  return PROVIDERS[request.provider].generate(request);
 }

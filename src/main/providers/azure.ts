@@ -7,8 +7,9 @@
 // `services.ai.azure.com/models` route. Same throw-on-failure contract as
 // ollama.ts: src/main/providers/index.ts never falls back to a raw OCR dump
 // on error.
-import type { AzureSettings, GenerateFrame } from '../../shared/generate';
+import type { AzureSettings, GenerateFrame, GenerateRequest } from '../../shared/generate';
 import { summaryInstructions } from './rules';
+import type { SummaryProvider } from './types';
 
 const MAX_IMAGES = 20;
 
@@ -112,3 +113,19 @@ Work note:`,
   }
   return (choice?.message?.content || '').trim();
 }
+
+export const azureProvider: SummaryProvider = {
+  generate(request: GenerateRequest): Promise<string> {
+    const settings: AzureSettings = {
+      endpoint: process.env.AZURE_OPENAI_ENDPOINT || '',
+      deployment: process.env.AZURE_OPENAI_DEPLOYMENT || '',
+    };
+    return generate(
+      process.env.AZURE_OPENAI_KEY || '',
+      settings,
+      request.frames,
+      request.activityTimelineText,
+      request.templateContent,
+    );
+  },
+};
