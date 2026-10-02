@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import logoUrl from './assets/cardonet-logo.png';
 import './styles.css';
-import { aHash, hamming, type AHash } from './lib/hash';
+import { aHash, clampThreshold, shouldKeepAsKeyframe, type AHash } from './lib/hash';
 import { buildActivityTimelineText } from './lib/activity';
 import {
   DEFAULT_THRESHOLD,
@@ -380,9 +380,9 @@ export default function App() {
     const hash = aHash(canvas);
     let thr = parseInt(ls('threshold', String(DEFAULT_THRESHOLD)), 10);
     if (!Number.isFinite(thr)) thr = DEFAULT_THRESHOLD;
-    thr = Math.max(0, Math.min(10, thr));
+    thr = clampThreshold(thr);
 
-    if (!lastHashRef.current || hamming(hash, lastHashRef.current) > thr) {
+    if (shouldKeepAsKeyframe(hash, lastHashRef.current, thr)) {
       lastHashRef.current = hash;
       keyframesRef.current.push({
         timestamp: Date.now(),

@@ -89,9 +89,15 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
    on it staying full-res.
 
 2. **Frame deduplication** (`lib/hash.ts`'s `aHash`/`hamming`) — pure-JS
-   average perceptual hash over an 8×8 `OffscreenCanvas` downscale. A frame
-   is only kept as a keyframe when its Hamming distance from the previous
-   kept frame exceeds the configured threshold (default 5 bits out of 64).
+   average perceptual hash over an 8×8 `OffscreenCanvas` downscale. The
+   keep/drop decision itself is `shouldKeepAsKeyframe(hash, lastHash,
+threshold)` (extracted out of `App.tsx`'s capture loop so it's unit-testable
+   without a canvas): keep if there's no prior hash yet, or if the Hamming
+   distance from the previous kept frame is strictly greater than the
+   configured threshold (`clampThreshold`'s 0-10 range, default 5 bits out of
+   64). Note `aHash` hashes any uniform-color frame to all 1s (zero variance
+   around its own mean) — it can't distinguish two different _solid_ colors
+   from each other, only genuine on-screen change.
 
 3. **OCR** (`lib/ocr.ts`) — a single `tesseract.js` worker is created
    lazily on first use and reused across all keyframes.
@@ -182,7 +188,19 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
      after OCR runs**. At generation, `maskedOcrText()` additionally
      **drops any OCR word whose bbox falls under a redaction mask** and
      re-scrubs — the raw-OCR/fallback text goes through the same redaction
-     gate as the pixels.
+     gate as the pixels. **`scrubText()`'s regexes run in a fixed order
+     (password → username → API-key → GUID → email)**, chained via
+     sequential `.replace()` calls, found while writing
+     `scrub-timeline.test.ts`: `API_KEY_RE`'s bare `[A-Za-z0-9_-]{32,}`
+     catch-all runs before `GUID_RE` and a standard 8-4-4-4-12 GUID is always
+     36 chars of exactly that character set, so it's consumed there first —
+     the value still gets redacted (`[redacted]`, not `[tenant-id]`), so
+     this is a labeling quirk, not a leak, but `GUID_RE` is effectively
+     unreachable for real GUIDs today. Likewise `USERNAME_RE`'s
+     `user=<value>` shape greedily matches a literal URL query string like
+     `?user=jdoe@example.com` before `EMAIL_RE` gets a turn. Pre-existing
+     behavior (1:1 port, no logic change) — don't "fix" the regex order
+     without separately confirming it doesn't change what gets redacted.
 
 6. **Region masking / Review & redact** (`lib/redact.ts` + the review
    stage in `App.tsx`) — after Stop, `analyzeFrames()` OCRs every frame and

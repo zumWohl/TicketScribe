@@ -21,3 +21,15 @@ export function hamming(h1: AHash, h2: AHash): number {
   for (let i = 0; i < h1.length; i++) if (h1[i] !== h2[i]) d++;
   return d;
 }
+
+// Settings' "Change threshold" field is free-typed, 0-10 inclusive.
+export function clampThreshold(raw: number): number {
+  return Math.max(0, Math.min(10, raw));
+}
+
+// A frame is kept as a new keyframe when there's no prior hash to compare
+// against (the very first frame), or when it's changed enough from the last
+// kept frame -- strictly more than `threshold` bits different out of 64.
+export function shouldKeepAsKeyframe(hash: AHash, lastHash: AHash | null, threshold: number): boolean {
+  return !lastHash || hamming(hash, lastHash) > threshold;
+}
