@@ -1,4 +1,5 @@
-// Pure, DOM-canvas redaction primitives shared by the app (App.tsx) and the
+// Pure, OffscreenCanvas-based redaction primitives shared by the app
+// (App.tsx, via redact-worker-client.ts/redact.worker.ts) and the
 // pixel-level verification test (redact.test.ts, imports this module
 // directly). Kept in one module so the security-critical masking path that
 // ships is the exact same code the test exercises.
@@ -10,10 +11,17 @@
 // returned dataUrl is derived from genuinely overwritten pixels -- not a DOM
 // overlay drawn on top of readable ones.
 //
-// 1:1 port of renderer/redact.js -- types only, no logic change.
+// This module never names HTMLCanvasElement -- it type-checks both under the
+// renderer's DOM lib (tsconfig.web.json, where App.tsx and redact.test.ts
+// live) and the worker's WebWorker-only lib (tsconfig.worker.json,
+// redact.worker.ts), which has no HTMLCanvasElement at all. The actual
+// masking runs off the main thread, in a Worker, via redact.worker.ts --
+// see redact-worker-client.ts for the dispatch side.
 import { MODEL_IMAGE_MAX_DIMENSION } from '../../../shared/image';
 
 export { MODEL_IMAGE_MAX_DIMENSION };
+
+const JPEG_QUALITY = 0.75;
 
 export interface Mask {
   id: string;
@@ -24,8 +32,22 @@ export interface Mask {
   auto?: boolean;
 }
 
+// Always OffscreenCanvas -- real in every environment this app actually runs
+// in (Electron's main thread and inside redact.worker.ts are both Chromium
+// contexts, where OffscreenCanvas is native), and polyfilled with
+// node-canvas's Canvas in the Vitest/jsdom unit test (redact.test.ts), the
+// same trick hash.test.ts already uses for aHash()'s OffscreenCanvas.
+function createWorkCanvas(width: number, height: number): OffscreenCanvas {
+  return new OffscreenCanvas(width, height);
+}
+
+function sourceSize(source: CanvasImageSource): { width: number; height: number } {
+  const sized = source as unknown as { width: number; height: number };
+  return { width: sized.width, height: sized.height };
+}
+
 // Clamp a rect (canvas-space px) to the canvas bounds and destructively fill it.
-export function fillMasks(canvas: HTMLCanvasElement, masks: Mask[] | null | undefined, fill?: string): void {
+export function fillMasks(canvas: OffscreenCanvas, masks: Mask[] | null | undefined, fill?: string): void {
   if (!masks || masks.length === 0) return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -39,21 +61,45 @@ export function fillMasks(canvas: HTMLCanvasElement, masks: Mask[] | null | unde
   }
 }
 
+// Test-only shape: the node-canvas Canvas polyfilled in as `OffscreenCanvas`
+// for redact.test.ts (see that file) has a real, Cairo-backed toDataURL, but
+// not the real OffscreenCanvas's convertToBlob.
+interface NodeCanvasEncodable {
+  toDataURL(type: string, quality: number): string;
+}
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+// A real OffscreenCanvas has no toDataURL -- only the async convertToBlob.
+// Detect which is available at runtime rather than assuming the environment,
+// so this one function serves both the real app and the test polyfill.
+async function encodeToDataUrl(canvas: OffscreenCanvas): Promise<string> {
+  if (typeof canvas.convertToBlob === 'function') {
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: JPEG_QUALITY });
+    const buf = await blob.arrayBuffer();
+    return `data:image/jpeg;base64,${arrayBufferToBase64(buf)}`;
+  }
+  return (canvas as unknown as NodeCanvasEncodable).toDataURL('image/jpeg', JPEG_QUALITY);
+}
+
 // Downscale a canvas to the long-edge cap and return a JPEG dataUrl. A canvas
 // already at or below the cap is emitted as-is (no upscaling).
-export function downscale(sourceCanvas: HTMLCanvasElement, maxDim?: number): string {
+export async function downscale(sourceCanvas: OffscreenCanvas, maxDim?: number): Promise<string> {
   const cap = maxDim || MODEL_IMAGE_MAX_DIMENSION;
   const { width, height } = sourceCanvas;
   const longEdge = Math.max(width, height);
   if (longEdge <= cap) {
-    return sourceCanvas.toDataURL('image/jpeg', 0.75);
+    return encodeToDataUrl(sourceCanvas);
   }
   const scale = cap / longEdge;
-  const out = document.createElement('canvas');
-  out.width = Math.round(width * scale);
-  out.height = Math.round(height * scale);
+  const out = createWorkCanvas(Math.round(width * scale), Math.round(height * scale));
   out.getContext('2d')?.drawImage(sourceCanvas, 0, 0, out.width, out.height);
-  return out.toDataURL('image/jpeg', 0.75);
+  return encodeToDataUrl(out);
 }
 
 export interface MaskAndDownscaleOptions {
@@ -63,17 +109,19 @@ export interface MaskAndDownscaleOptions {
 
 // The one true send-path: mask destructively on a full-res copy, THEN
 // downscale. Returns a dataUrl whose masked regions contain only fill pixels.
-export function maskAndDownscale(
-  sourceCanvas: HTMLCanvasElement,
+// `sourceCanvas` is whatever the caller already has pixels in -- an
+// HTMLCanvasElement (redact.test.ts, drawing directly) or an ImageBitmap
+// (redact.worker.ts, given a transferred snapshot of the live keyframe
+// canvas -- see redact-worker-client.ts).
+export async function maskAndDownscale(
+  sourceCanvas: CanvasImageSource,
   masks: Mask[],
   opts?: MaskAndDownscaleOptions,
-): string {
+): Promise<string> {
   const o = opts || {};
-  const work = document.createElement('canvas');
-  work.width = sourceCanvas.width;
-  work.height = sourceCanvas.height;
-  const ctx = work.getContext('2d');
-  ctx?.drawImage(sourceCanvas, 0, 0);
+  const { width, height } = sourceSize(sourceCanvas);
+  const work = createWorkCanvas(width, height);
+  work.getContext('2d')?.drawImage(sourceCanvas, 0, 0);
   fillMasks(work, masks, o.fill || '#000000'); // full-res, before downscale
   return downscale(work, o.maxDim || MODEL_IMAGE_MAX_DIMENSION);
 }

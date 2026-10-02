@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-//
 // Vitest port of test/mask-verify.html: pixel-level proof that redaction is
 // DESTRUCTIVE on the sent image -- the exact maskAndDownscale() the app
 // ships, imported directly (no esbuild CJS step needed here, unlike the
@@ -8,16 +6,22 @@
 // secret was in the FINAL dataUrl and asserts the red is gone (replaced by
 // the mask fill), not merely covered by an overlay.
 //
-// jsdom's HTMLCanvasElement.getContext('2d') delegates to the `canvas`
-// package (node-canvas, a devDependency) when present, so this exercises
-// real Cairo-backed rendering, not a stub. The JPEG dataUrl readback uses
-// canvas's own loadImage()/createCanvas() directly rather than jsdom's
-// Image/HTMLImageElement, which sidesteps jsdom's own (separately finicky)
-// image-loading integration -- only canvas creation needs to come from
-// jsdom here, since that's the part maskAndDownscale() itself depends on.
-import { describe, it, expect } from 'vitest';
-import { loadImage, createCanvas as nodeCreateCanvas } from 'canvas';
+// redact.ts's internal "work" canvas is a real OffscreenCanvas in the app
+// (and inside redact.worker.ts) -- the test environment has no OffscreenCanvas
+// at all, so it's polyfilled with node-canvas's Canvas here, the same trick
+// hash.test.ts uses for aHash(). The source canvas is built the same way
+// (nodeCreateCanvas, not document.createElement) so it's a genuine node-canvas
+// object drawImage() can composite directly, Cairo-backed throughout, not a
+// stub. maskAndDownscale() is therefore async now (OffscreenCanvas's real
+// encode path, convertToBlob, is async) -- awaited below like any other
+// async call, not a behavior change.
+import { describe, it, expect, beforeAll } from 'vitest';
+import { Canvas, loadImage, createCanvas as nodeCreateCanvas } from 'canvas';
 import { maskAndDownscale, MODEL_IMAGE_MAX_DIMENSION, type Mask } from './redact';
+
+beforeAll(() => {
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = Canvas;
+});
 
 interface SecretRect {
   x: number;
@@ -27,15 +31,13 @@ interface SecretRect {
 }
 
 function makeSecretCanvas(w: number, h: number, secret: SecretRect): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext('2d')!;
+  const c = nodeCreateCanvas(w, h);
+  const ctx = c.getContext('2d');
   ctx.fillStyle = '#00c000'; // green field
   ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = '#ff0000'; // the "secret"
   ctx.fillRect(secret.x, secret.y, secret.w, secret.h);
-  return c;
+  return c as unknown as HTMLCanvasElement;
 }
 
 interface FrameCheckResult {
@@ -55,7 +57,7 @@ async function checkFrame(w: number, h: number): Promise<FrameCheckResult> {
   };
   const src = makeSecretCanvas(w, h, secret);
   const masks: Mask[] = [{ id: 'm1', x: secret.x - 4, y: secret.y - 4, w: secret.w + 8, h: secret.h + 8 }]; // full-res coords
-  const dataUrl = maskAndDownscale(src, masks);
+  const dataUrl = await maskAndDownscale(src, masks);
 
   const img = await loadImage(dataUrl);
   const out = nodeCreateCanvas(img.width, img.height);

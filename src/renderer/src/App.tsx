@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import logoUrl from './assets/cardonet-logo.png';
 import './styles.css';
-import { aHash, clampThreshold, shouldKeepAsKeyframe, type AHash } from './lib/hash';
+import { clampThreshold, shouldKeepAsKeyframe, type AHash } from './lib/hash';
+import { hashInWorker } from './lib/hash-worker-client';
 import { buildActivityTimelineText } from './lib/activity';
 import {
   DEFAULT_THRESHOLD,
@@ -23,7 +24,8 @@ import {
   type SummaryTemplate,
 } from './lib/settings';
 import { runOCR, ensureOCRWorker, type OcrWord } from './lib/ocr';
-import { maskAndDownscale, type Mask } from './lib/redact';
+import type { Mask } from './lib/redact';
+import { maskAndDownscaleInWorker } from './lib/redact-worker-client';
 import { scrubText, scrubEvents, findSensitiveWords } from './lib/scrub-timeline';
 import type { ActivityEvent } from '../../shared/events';
 import type { GenerateRequest } from '../../shared/generate';
@@ -318,6 +320,7 @@ export default function App() {
   const timerHandleRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownHandleRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastHashRef = useRef<AHash | null>(null);
+  const captureBusyRef = useRef(false); // true while a tick's hash is still computing in the worker
   const startTimeRef = useRef(0);
   const durationWarnedRef = useRef(false);
   const keyframesRef = useRef<Keyframe[]>([]);
@@ -417,6 +420,10 @@ export default function App() {
   const captureFrame = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+    // The previous tick's hash is still computing in the worker -- skip this
+    // tick rather than risk two in-flight hashes resolving out of order and
+    // comparing against a stale lastHashRef.
+    if (captureBusyRef.current) return;
     const w = video.videoWidth || 1280;
     const h = video.videoHeight || 720;
     const canvas = document.createElement('canvas');
@@ -424,24 +431,30 @@ export default function App() {
     canvas.height = h;
     canvas.getContext('2d')!.drawImage(video, 0, 0);
 
-    const hash = aHash(canvas);
-    let thr = parseInt(ls('threshold', String(DEFAULT_THRESHOLD)), 10);
-    if (!Number.isFinite(thr)) thr = DEFAULT_THRESHOLD;
-    thr = clampThreshold(thr);
+    captureBusyRef.current = true;
+    void hashInWorker(canvas)
+      .then(hash => {
+        let thr = parseInt(ls('threshold', String(DEFAULT_THRESHOLD)), 10);
+        if (!Number.isFinite(thr)) thr = DEFAULT_THRESHOLD;
+        thr = clampThreshold(thr);
 
-    if (shouldKeepAsKeyframe(hash, lastHashRef.current, thr)) {
-      lastHashRef.current = hash;
-      keyframesRef.current.push({
-        timestamp: Date.now(),
-        canvas,
-        ocrText: '',
-        ocrWords: [],
-        masks: [],
-        removed: false,
-        reviewed: false,
+        if (shouldKeepAsKeyframe(hash, lastHashRef.current, thr)) {
+          lastHashRef.current = hash;
+          keyframesRef.current.push({
+            timestamp: Date.now(),
+            canvas,
+            ocrText: '',
+            ocrWords: [],
+            masks: [],
+            removed: false,
+            reviewed: false,
+          });
+          setFrameCount(keyframesRef.current.length);
+        }
+      })
+      .finally(() => {
+        captureBusyRef.current = false;
       });
-      setFrameCount(keyframesRef.current.length);
-    }
   }, []);
 
   const startCapture = useCallback(async () => {
@@ -935,11 +948,13 @@ export default function App() {
 
     procStep(1);
     setProgress(30, 'Applying redaction masks to frames');
-    const sendFrames = live.map(kf => ({
-      timestamp: kf.timestamp,
-      dataUrl: maskAndDownscale(kf.canvas, kf.masks),
-      ocrText: maskedOcrText(kf),
-    }));
+    const sendFrames = await Promise.all(
+      live.map(async kf => ({
+        timestamp: kf.timestamp,
+        dataUrl: await maskAndDownscaleInWorker(kf.canvas, kf.masks),
+        ocrText: maskedOcrText(kf),
+      })),
+    );
     const rawFallbackText = sendFrames
       .map(f => f.ocrText)
       .filter(Boolean)

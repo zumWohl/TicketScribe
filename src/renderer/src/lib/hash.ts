@@ -1,12 +1,16 @@
 // Perceptual average-hash frame deduplication. 1:1 port of app.js's
-// aHash/hamming (pure JS, OffscreenCanvas) -- no logic change.
+// aHash/hamming (pure JS, OffscreenCanvas) -- no logic change. `source`'s
+// type never names HTMLCanvasElement so this file type-checks both under the
+// renderer's DOM lib (tsconfig.web.json) and the worker's WebWorker-only lib
+// (tsconfig.worker.json, hash.worker.ts) -- see hash-worker-client.ts for the
+// off-main-thread dispatch side App.tsx's capture loop actually calls.
 export type AHash = number[];
 
-export function aHash(sourceCanvas: HTMLCanvasElement): AHash {
+export function aHash(source: CanvasImageSource): AHash {
   const SIZE = 8;
   const off = new OffscreenCanvas(SIZE, SIZE);
   const ctx = off.getContext('2d')!;
-  ctx.drawImage(sourceCanvas, 0, 0, SIZE, SIZE);
+  ctx.drawImage(source, 0, 0, SIZE, SIZE);
   const px = ctx.getImageData(0, 0, SIZE, SIZE).data;
   const grays: number[] = [];
   for (let i = 0; i < px.length; i += 4) {
