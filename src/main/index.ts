@@ -2,9 +2,8 @@ import { app, BrowserWindow, ipcMain, desktopCapturer, screen, shell } from 'ele
 import path from 'path';
 import fs from 'fs';
 import * as eventsCapture from './events-capture';
-import type { EventsStartOptions, EventsStopOptions } from '../shared/events';
-import type { GenerateRequest } from '../shared/generate';
 import * as providers from './providers';
+import { IPC_CHANNELS, type IpcRequest, type IpcResponse } from '../shared/ipc';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -51,54 +50,66 @@ function createWindow(): void {
 // resolution + a "Primary" tag into the name, so multiple monitors read as
 // e.g. "Screen 1 · 2560×1440 · Primary" / "Screen 2 · 1920×1080" instead of
 // indistinguishable "Entire screen" entries.
-ipcMain.handle('get-sources', async (_e, opts: { types?: string[] } | undefined) => {
-  const types = opts && Array.isArray(opts.types) && opts.types.length ? opts.types : ['screen'];
-  const sources = await desktopCapturer.getSources({
-    types: types as Array<'screen' | 'window'>,
-    thumbnailSize: { width: 320, height: 180 },
-  });
-  const displays = screen.getAllDisplays();
-  const primaryId = screen.getPrimaryDisplay().id;
-  return sources.map(s => {
-    const isScreen = s.id.startsWith('screen');
-    let name = s.name || (isScreen ? 'Entire screen' : 'Window');
-    if (isScreen && s.display_id) {
-      const d = displays.find(dd => String(dd.id) === String(s.display_id));
-      if (d) {
-        const w = Math.round(d.size.width * d.scaleFactor);
-        const h = Math.round(d.size.height * d.scaleFactor);
-        name = `${name} · ${w}×${h}${d.id === primaryId ? ' · Primary' : ''}`;
+ipcMain.handle(
+  IPC_CHANNELS.getSources,
+  async (
+    _e,
+    opts: IpcRequest<typeof IPC_CHANNELS.getSources>,
+  ): Promise<IpcResponse<typeof IPC_CHANNELS.getSources>> => {
+    const types = opts && Array.isArray(opts.types) && opts.types.length ? opts.types : ['screen'];
+    const sources = await desktopCapturer.getSources({
+      types: types as Array<'screen' | 'window'>,
+      thumbnailSize: { width: 320, height: 180 },
+    });
+    const displays = screen.getAllDisplays();
+    const primaryId = screen.getPrimaryDisplay().id;
+    return sources.map(s => {
+      const isScreen = s.id.startsWith('screen');
+      let name = s.name || (isScreen ? 'Entire screen' : 'Window');
+      if (isScreen && s.display_id) {
+        const d = displays.find(dd => String(dd.id) === String(s.display_id));
+        if (d) {
+          const w = Math.round(d.size.width * d.scaleFactor);
+          const h = Math.round(d.size.height * d.scaleFactor);
+          name = `${name} · ${w}×${h}${d.id === primaryId ? ' · Primary' : ''}`;
+        }
       }
-    }
-    return {
-      id: s.id,
-      name,
-      type: isScreen ? 'screen' : 'window',
-      thumbnail: s.thumbnail.isEmpty() ? '' : s.thumbnail.toDataURL(),
-    };
-  });
-});
+      return {
+        id: s.id,
+        name,
+        type: isScreen ? 'screen' : 'window',
+        thumbnail: s.thumbnail.isEmpty() ? '' : s.thumbnail.toDataURL(),
+      };
+    });
+  },
+);
 
 // Write the confirmed summary text to Documents/CardonetCapture/. `filename`
 // is renderer-supplied -- reject anything that isn't a bare filename (no path
 // separators, no traversal) before it reaches the filesystem.
-ipcMain.handle('save-summary', async (_e, { filename, content }: { filename: string; content: string }) => {
-  try {
-    if (!filename || path.basename(filename) !== filename) {
-      throw new Error('Invalid filename.');
+ipcMain.handle(
+  IPC_CHANNELS.saveSummary,
+  async (
+    _e,
+    { filename, content }: IpcRequest<typeof IPC_CHANNELS.saveSummary>,
+  ): Promise<IpcResponse<typeof IPC_CHANNELS.saveSummary>> => {
+    try {
+      if (!filename || path.basename(filename) !== filename) {
+        throw new Error('Invalid filename.');
+      }
+      const dir = path.join(app.getPath('documents'), 'CardonetCapture');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const filepath = path.join(dir, filename);
+      fs.writeFileSync(filepath, content, 'utf8');
+      return { ok: true, path: filepath };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
     }
-    const dir = path.join(app.getPath('documents'), 'CardonetCapture');
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const filepath = path.join(dir, filename);
-    fs.writeFileSync(filepath, content, 'utf8');
-    return { ok: true, path: filepath };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
-  }
-});
+  },
+);
 
 // Open the CardonetCapture documents folder in Explorer
-ipcMain.handle('open-folder', async () => {
+ipcMain.handle(IPC_CHANNELS.openFolder, async () => {
   const dir = path.join(app.getPath('documents'), 'CardonetCapture');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   shell.openPath(dir);
@@ -106,20 +117,20 @@ ipcMain.handle('open-folder', async () => {
 
 // Event-stream capture (window/app activity, terminal history, browser
 // history) -- see main/events-capture.ts for the source-by-source detail.
-ipcMain.handle('events:start', (_e, opts: EventsStartOptions) => {
+ipcMain.handle(IPC_CHANNELS.eventsStart, (_e, opts: IpcRequest<typeof IPC_CHANNELS.eventsStart>) => {
   eventsCapture.start(opts);
 });
-ipcMain.handle('events:stop', (_e, opts: EventsStopOptions) => {
+ipcMain.handle(IPC_CHANNELS.eventsStop, (_e, opts: IpcRequest<typeof IPC_CHANNELS.eventsStop>) => {
   return eventsCapture.stop(opts);
 });
-ipcMain.handle('events:get-transcript-snippet', () => {
+ipcMain.handle(IPC_CHANNELS.eventsGetTranscriptSnippet, () => {
   return eventsCapture.getTranscriptProfileSnippet();
 });
 
 // Summary generation (Ollama/Claude/echo) -- moved to the main process so API
 // keys and the fetch itself never touch the renderer/CSP. See
 // src/main/providers/index.ts for the dispatcher.
-ipcMain.handle('generate', (_e, request: GenerateRequest) => {
+ipcMain.handle(IPC_CHANNELS.generate, (_e, request: IpcRequest<typeof IPC_CHANNELS.generate>) => {
   return providers.generate(request);
 });
 
@@ -127,7 +138,7 @@ app.whenReady().then(() => {
   createWindow();
   // `mainWindow` is read at call time (not captured now), so this still
   // targets the real window even though createWindow() just reassigned it.
-  eventsCapture.setDegradedHandler(message => mainWindow?.webContents.send('events:degraded', message));
+  eventsCapture.setDegradedHandler(message => mainWindow?.webContents.send(IPC_CHANNELS.eventsDegraded, message));
 });
 
 app.on('window-all-closed', () => {

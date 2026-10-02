@@ -1,40 +1,31 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { EventsStartOptions, EventsStopOptions, ActivityEvent } from '../shared/events';
-import type { GenerateRequest } from '../shared/generate';
-
-// Mirrors main/index.ts's get-sources handler return shape. Without this,
-// getSources() resolves to Promise<any> and every call site's destructuring
-// silently loses type safety (ipcRenderer.invoke's own return type is `any`).
-export interface CaptureSourceInfo {
-  id: string;
-  name: string;
-  type: 'window' | 'screen';
-  thumbnail: string;
-}
-
-// Mirrors main/index.ts's save-summary handler return shape.
-export interface SaveSummaryResult {
-  ok: boolean;
-  path?: string;
-  error?: string;
-}
+import { IPC_CHANNELS, type IpcRequest, type IpcResponse } from '../shared/ipc';
 
 const api = {
-  getSources: (opts: { types?: string[] }): Promise<CaptureSourceInfo[]> => ipcRenderer.invoke('get-sources', opts),
-  saveSummary: (payload: { filename: string; content: string }): Promise<SaveSummaryResult> =>
-    ipcRenderer.invoke('save-summary', payload),
-  openFolder: (): Promise<void> => ipcRenderer.invoke('open-folder'),
-  eventsStart: (opts: EventsStartOptions): Promise<void> => ipcRenderer.invoke('events:start', opts),
-  eventsStop: (opts: EventsStopOptions): Promise<ActivityEvent[]> => ipcRenderer.invoke('events:stop', opts),
-  getTranscriptSnippet: (): Promise<string> => ipcRenderer.invoke('events:get-transcript-snippet'),
-  generate: (payload: GenerateRequest): Promise<string> => ipcRenderer.invoke('generate', payload),
+  getSources: (
+    opts: IpcRequest<typeof IPC_CHANNELS.getSources>,
+  ): Promise<IpcResponse<typeof IPC_CHANNELS.getSources>> => ipcRenderer.invoke(IPC_CHANNELS.getSources, opts),
+  saveSummary: (
+    payload: IpcRequest<typeof IPC_CHANNELS.saveSummary>,
+  ): Promise<IpcResponse<typeof IPC_CHANNELS.saveSummary>> => ipcRenderer.invoke(IPC_CHANNELS.saveSummary, payload),
+  openFolder: (): Promise<IpcResponse<typeof IPC_CHANNELS.openFolder>> => ipcRenderer.invoke(IPC_CHANNELS.openFolder),
+  eventsStart: (
+    opts: IpcRequest<typeof IPC_CHANNELS.eventsStart>,
+  ): Promise<IpcResponse<typeof IPC_CHANNELS.eventsStart>> => ipcRenderer.invoke(IPC_CHANNELS.eventsStart, opts),
+  eventsStop: (
+    opts: IpcRequest<typeof IPC_CHANNELS.eventsStop>,
+  ): Promise<IpcResponse<typeof IPC_CHANNELS.eventsStop>> => ipcRenderer.invoke(IPC_CHANNELS.eventsStop, opts),
+  getTranscriptSnippet: (): Promise<IpcResponse<typeof IPC_CHANNELS.eventsGetTranscriptSnippet>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.eventsGetTranscriptSnippet),
+  generate: (payload: IpcRequest<typeof IPC_CHANNELS.generate>): Promise<IpcResponse<typeof IPC_CHANNELS.generate>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.generate, payload),
   // One-way push from events-capture.ts when the window-activity poll
   // process crashes and exhausts its restart attempts mid-recording. Returns
   // an unsubscribe function so callers can clean up on unmount.
   onEventsDegraded: (callback: (message: string) => void): (() => void) => {
     const listener = (_e: unknown, message: string): void => callback(message);
-    ipcRenderer.on('events:degraded', listener);
-    return () => ipcRenderer.removeListener('events:degraded', listener);
+    ipcRenderer.on(IPC_CHANNELS.eventsDegraded, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventsDegraded, listener);
   },
 };
 
