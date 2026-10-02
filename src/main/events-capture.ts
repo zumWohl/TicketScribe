@@ -18,17 +18,17 @@ import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'child_
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type {
-  ActivityEvent,
-  EventsStartOptions,
-  EventsStopOptions,
-  WindowCategory,
-} from '../shared/events';
+import type { ActivityEvent, EventsStartOptions, EventsStopOptions, WindowCategory } from '../shared/events';
 
 type Sqlite3Database = {
-  prepare(sql: string): { all(...params: unknown[]): any[] };
+  prepare(sql: string): { all<T = unknown>(...params: unknown[]): T[] };
   close(): void;
 };
+interface HistoryRow {
+  url: string;
+  title: string;
+  visit_time: number;
+}
 type Sqlite3Ctor = new (path: string, opts?: { readonly?: boolean }) => Sqlite3Database;
 
 let sqlite3: Sqlite3Ctor | null = null;
@@ -36,8 +36,7 @@ try {
   // Native module -- requires `npx electron-rebuild` after `npm install`.
   // If it isn't built for this Electron ABI, browser-history capture simply
   // no-ops rather than crashing the app.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  sqlite3 = require('better-sqlite3');
+  sqlite3 = require('better-sqlite3') as Sqlite3Ctor;
 } catch {
   sqlite3 = null;
 }
@@ -71,9 +70,19 @@ while ($true) {
 }
 `;
 
-const REMOTE_PROCESSES = ['mstsc', 'screenconnect', 'connectwisecontrol', 'connectwise', 'anydesk', 'teamviewer', 'rustdesk', 'splashtop'];
+const REMOTE_PROCESSES = [
+  'mstsc',
+  'screenconnect',
+  'connectwisecontrol',
+  'connectwise',
+  'anydesk',
+  'teamviewer',
+  'rustdesk',
+  'splashtop',
+];
 const TERMINAL_PROCESSES = ['powershell', 'pwsh', 'cmd', 'windowsterminal', 'conhost'];
-const ADMIN_CONSOLE_TITLE_RE = /portal\.azure\.com|admin\.microsoft\.com|entra\.microsoft\.com|outlook\.office|exchange admin|intune|endpoint\.microsoft\.com/i;
+const ADMIN_CONSOLE_TITLE_RE =
+  /portal\.azure\.com|admin\.microsoft\.com|entra\.microsoft\.com|outlook\.office|exchange admin|intune|endpoint\.microsoft\.com/i;
 const PSA_TITLE_RE = /halo(itsm|servicedesk|psa)?/i;
 
 function classifyWindow(processName: string, windowTitle: string): WindowCategory {
@@ -95,14 +104,27 @@ interface WindowEntry {
   durationMs: number;
 }
 
+const MAX_POLL_RESTARTS = 3;
+
 let pollProcess: ChildProcessWithoutNullStreams | null = null;
 let windowEntries: WindowEntry[] = [];
 let currentWindowEntry: WindowEntry | null = null;
+let windowPollingActive = false; // true between start()/stop() -- gates whether an exit should respawn
+let pollRestartCount = 0;
+let onDegraded: ((message: string) => void) | null = null;
+
+// Called once at startup (main/index.ts) so a poll-process failure the user
+// can't see from the Settings/Review UI still surfaces somewhere, instead of
+// window-activity silently going missing from the summary.
+export function setDegradedHandler(handler: ((message: string) => void) | null): void {
+  onDegraded = handler;
+}
 
 function handleWindowSample(timestamp: number, processName: string, windowTitle: string): void {
-  const isSameWindow = currentWindowEntry
-    && currentWindowEntry.processName === processName
-    && currentWindowEntry.windowTitle === windowTitle;
+  const isSameWindow =
+    currentWindowEntry &&
+    currentWindowEntry.processName === processName &&
+    currentWindowEntry.windowTitle === windowTitle;
 
   if (isSameWindow && currentWindowEntry) {
     currentWindowEntry.durationMs = timestamp - currentWindowEntry.timestamp;
@@ -125,9 +147,10 @@ function startWindowPolling(): void {
     pollProcess = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOW_POLL_SCRIPT]);
   } catch {
     pollProcess = null;
+    onDegraded?.('Window/app-focus tracking could not be started (failed to launch PowerShell).');
     return;
   }
-  pollProcess.stdout.on('data', chunk => {
+  pollProcess.stdout.on('data', (chunk: Buffer | string) => {
     buffer += chunk.toString();
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() ?? '';
@@ -139,12 +162,41 @@ function startWindowPolling(): void {
       handleWindowSample(timestamp, parts[1], parts.slice(2).join('|'));
     }
   });
-  pollProcess.on('error', () => { pollProcess = null; });
+  // 'error' fires for spawn-level failures (e.g. powershell.exe not found);
+  // 'exit' fires when the process dies for any reason, including a crash
+  // mid-recording. Both only respawn while a recording is actually active --
+  // stopWindowPolling() nulls pollProcess first, so its own kill() doesn't
+  // trigger a respawn loop.
+  pollProcess.on('error', () => {
+    pollProcess = null;
+    maybeRespawnPolling();
+  });
+  pollProcess.on('exit', () => {
+    pollProcess = null;
+    maybeRespawnPolling();
+  });
+}
+
+function maybeRespawnPolling(): void {
+  if (!windowPollingActive) return; // stop() already called -- not a crash
+  pollRestartCount += 1;
+  if (pollRestartCount > MAX_POLL_RESTARTS) {
+    onDegraded?.(
+      `Window/app-focus tracking stopped after ${MAX_POLL_RESTARTS} restart attempts and will not be retried for this recording. Other activity sources and the video itself are unaffected.`,
+    );
+    return;
+  }
+  startWindowPolling();
 }
 
 function stopWindowPolling(): WindowEntry[] {
+  windowPollingActive = false;
   if (pollProcess) {
-    try { pollProcess.kill(); } catch { /* already gone */ }
+    try {
+      pollProcess.kill();
+    } catch {
+      /* already gone */
+    }
     pollProcess = null;
   }
   if (currentWindowEntry) {
@@ -153,6 +205,20 @@ function stopWindowPolling(): WindowEntry[] {
     currentWindowEntry = null;
   }
   return windowEntries;
+}
+
+// Force-kill the poll process regardless of recording state -- called at app
+// quit so an orphaned powershell.exe never outlives the app window.
+export function shutdown(): void {
+  windowPollingActive = false;
+  if (pollProcess) {
+    try {
+      pollProcess.kill();
+    } catch {
+      /* already gone */
+    }
+    pollProcess = null;
+  }
 }
 
 // ─── Terminal: PowerShell history (PSReadLine) ─────────────────────────────
@@ -215,7 +281,11 @@ function diffPsHistory(snapshot: PsHistorySnapshot | null): string[] {
 
 function getTranscriptDir(): string {
   const dir = path.join(os.tmpdir(), 'cardonetcapture-transcripts');
-  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* already exists */ }
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    /* already exists */
+  }
   return dir;
 }
 
@@ -243,11 +313,17 @@ function collectTranscripts(startMs: number, endMs: number): Array<{ file: strin
   for (const name of files) {
     const full = path.join(dir, name);
     let stat: fs.Stats;
-    try { stat = fs.statSync(full); } catch { continue; }
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      continue;
+    }
     if (stat.mtimeMs < startMs || stat.birthtimeMs > endMs) continue;
     try {
       results.push({ file: name, content: fs.readFileSync(full, 'utf8').slice(0, 20000) });
-    } catch { /* unreadable transcript, skip */ }
+    } catch {
+      /* unreadable transcript, skip */
+    }
   }
   return results;
 }
@@ -258,7 +334,8 @@ const CHROME_EPOCH_OFFSET_MS = 11644473600000; // Windows FILETIME epoch (1601-0
 const chromeTimeToMs = (chromeTime: number): number => chromeTime / 1000 - CHROME_EPOCH_OFFSET_MS;
 const msToChromeTime = (ms: number): number => (ms + CHROME_EPOCH_OFFSET_MS) * 1000;
 
-const ADMIN_PORTAL_RE = /admin\.microsoft\.com|entra\.microsoft\.com|portal\.azure\.com|outlook\.office\.com\/exchange|endpoint\.microsoft\.com|intune|exchange admin/i;
+const ADMIN_PORTAL_RE =
+  /admin\.microsoft\.com|entra\.microsoft\.com|portal\.azure\.com|outlook\.office\.com\/exchange|endpoint\.microsoft\.com|intune|exchange admin/i;
 const KB_DOCS_RE = /docs\.microsoft\.com|learn\.microsoft\.com|support\.microsoft\.com|knowledge.?base|\/kb\//i;
 const PSA_URL_RE = /halo/i;
 
@@ -288,16 +365,21 @@ interface BrowserVisit {
 function queryBrowserHistory(historyDbPath: string, startMs: number, endMs: number): BrowserVisit[] {
   if (!sqlite3) return [];
   // Copy first: the History file is locked while the browser holds it open.
-  const tmpCopy = path.join(os.tmpdir(), `cardonetcapture-history-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+  const tmpCopy = path.join(
+    os.tmpdir(),
+    `cardonetcapture-history-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`,
+  );
   let db: Sqlite3Database | null = null;
   try {
     fs.copyFileSync(historyDbPath, tmpCopy);
     db = new sqlite3(tmpCopy, { readonly: true });
-    const rows = db.prepare(
-      `SELECT urls.url AS url, urls.title AS title, visits.visit_time AS visit_time
+    const rows = db
+      .prepare(
+        `SELECT urls.url AS url, urls.title AS title, visits.visit_time AS visit_time
        FROM visits JOIN urls ON visits.url = urls.id
        WHERE visits.visit_time BETWEEN ? AND ?`,
-    ).all(msToChromeTime(startMs), msToChromeTime(endMs));
+      )
+      .all<HistoryRow>(msToChromeTime(startMs), msToChromeTime(endMs));
     return rows.map(r => ({
       timestamp: Math.round(chromeTimeToMs(r.visit_time)),
       url: r.url,
@@ -307,8 +389,18 @@ function queryBrowserHistory(historyDbPath: string, startMs: number, endMs: numb
   } catch {
     return [];
   } finally {
-    if (db) { try { db.close(); } catch { /* ignore */ } }
-    try { fs.unlinkSync(tmpCopy); } catch { /* ignore */ }
+    if (db) {
+      try {
+        db.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      fs.unlinkSync(tmpCopy);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -334,7 +426,11 @@ export function start({ window = true, transcript = false }: EventsStartOptions 
   currentWindowEntry = null;
   psHistorySnapshot = snapshotPsHistory();
   transcriptEnabled = !!transcript;
-  if (window) startWindowPolling();
+  pollRestartCount = 0;
+  if (window) {
+    windowPollingActive = true;
+    startWindowPolling();
+  }
 }
 
 export function stop({ terminal = true, browserHistory = true }: EventsStopOptions = {}): ActivityEvent[] {
@@ -353,14 +449,22 @@ export function stop({ terminal = true, browserHistory = true }: EventsStopOptio
     });
     if (transcriptEnabled) {
       collectTranscripts(sessionStart, sessionEnd).forEach(t => {
-        events.push({ type: 'terminal', timestamp: sessionStart, detail: { shell: 'powershell-transcript', file: t.file, content: t.content } });
+        events.push({
+          type: 'terminal',
+          timestamp: sessionStart,
+          detail: { shell: 'powershell-transcript', file: t.file, content: t.content },
+        });
       });
     }
   }
 
   if (browserHistory) {
     collectBrowserHistory(sessionStart, sessionEnd).forEach(v => {
-      events.push({ type: 'browser', timestamp: v.timestamp, detail: { browser: v.browser, url: v.url, title: v.title, category: v.category } });
+      events.push({
+        type: 'browser',
+        timestamp: v.timestamp,
+        detail: { browser: v.browser, url: v.url, title: v.title, category: v.category },
+      });
     });
   }
 

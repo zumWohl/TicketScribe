@@ -12,6 +12,10 @@ interface OllamaGeneratePayload {
   stream?: boolean;
 }
 
+interface OllamaGenerateResponse {
+  response?: string;
+}
+
 async function ollamaGenerate(url: string, payload: OllamaGeneratePayload): Promise<string> {
   let res: Response;
   try {
@@ -21,17 +25,26 @@ async function ollamaGenerate(url: string, payload: OllamaGeneratePayload): Prom
       body: JSON.stringify({ ...payload, stream: false }),
     });
   } catch {
-    throw new Error(`Could not reach Ollama at ${url} — start Ollama and make sure it's listening there, then try again.`);
+    throw new Error(
+      `Could not reach Ollama at ${url} — start Ollama and make sure it's listening there, then try again.`,
+    );
   }
   if (!res.ok) {
     if (res.status === 404) {
-      throw new Error(`Ollama model "${payload.model}" was not found — run "ollama pull ${payload.model}", then try again.`);
+      throw new Error(
+        `Ollama model "${payload.model}" was not found — run "ollama pull ${payload.model}", then try again.`,
+      );
     }
     let detail = '';
-    try { detail = await res.text(); } catch { /* ignore */ }
+    try {
+      detail = await res.text();
+    } catch {
+      /* ignore */
+    }
     throw new Error(`Ollama ${res.status}: ${detail}`);
   }
-  return (await res.json()).response.trim();
+  const data = (await res.json()) as OllamaGenerateResponse;
+  return (data.response || '').trim();
 }
 
 export async function describeFrame(url: string, vlmModel: string, dataUrl: string, ocrText: string): Promise<string> {

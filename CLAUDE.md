@@ -5,8 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```powershell
-npm install           # install dependencies (run once after cloning) -- also vendors tesseract assets (postinstall)
-npm run rebuild        # rebuild better-sqlite3 for Electron's Node ABI (one-time, needed for browser-history capture)
+npm install           # install dependencies (run once after cloning) -- postinstall also vendors
+                       # tesseract assets AND rebuilds better-sqlite3 for Electron's Node ABI
+npm run rebuild        # force-rebuild better-sqlite3 manually (rarely needed; postinstall already does this)
 npm start              # launch the app (electron-vite dev, hot reload)
 npm run dev            # same, with the Node inspector attached
 npm run dist           # build + package an NSIS installer (dist/CardonetCapture-Setup-<version>-x64.exe)
@@ -27,6 +28,7 @@ via `electron-vite`) with the renderer sandboxed: `contextIsolation: true`,
 through a `contextBridge`-exposed `window.cardonetCapture` API.
 
 **Source layout:**
+
 - `src/main/` — main process. `index.ts` hosts the IPC handlers
   (`get-sources`, `save-summary`, `open-folder`, `events:start`,
   `events:stop`, `events:get-transcript-snippet`, `generate`) and loads the
@@ -82,7 +84,7 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
    OCR and as the masking source, held in a `ref`, not React state — these
    are heavy, mutable objects). The downscaled `dataUrl` sent to the
    model is derived only at generation time by `maskAndDownscale()`
-   (`lib/redact.ts`), *after* redaction masks are applied to the full-res
+   (`lib/redact.ts`), _after_ redaction masks are applied to the full-res
    canvas. Don't downscale the `canvas` field itself; OCR accuracy depends
    on it staying full-res.
 
@@ -151,19 +153,28 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
      PowerShell child process polls the foreground window via a
      `user32.dll` P/Invoke snippet (`WINDOW_POLL_SCRIPT`). Focus-change
      events carry `durationMs` and a coarse `category`
-     (`remote`/`admin-console`/`psa`/`terminal`/`other`).
+     (`remote`/`admin-console`/`psa`/`terminal`/`other`). **Supervised**: an
+     unexpected exit/crash mid-recording respawns it (up to
+     `MAX_POLL_RESTARTS`, currently 3); exceeding that calls the
+     `setDegradedHandler()` callback, which `main/index.ts` wires to
+     `events:degraded` over IPC so the renderer can show a warning during
+     the recording stage (other activity sources and the video are
+     unaffected). `shutdown()` force-kills the poll process on `before-quit`
+     so it never outlives the app, independent of whether a recording is
+     active.
    - **Terminal commands** — PowerShell only, via a PSReadLine
      history-file line-count diff. An **opt-in** transcript mode
-     (`Start-Transcript`) captures command *output* too, via a one-time
+     (`Start-Transcript`) captures command _output_ too, via a one-time
      profile snippet (`getTranscriptProfileSnippet()`). **cmd.exe command
      text is not captured** (visible as a focused window only, via the
      window-activity source).
    - **Browser activity (Chrome/Edge)** — copies the locked `History`
      SQLite file to a temp path, classifies each visit
      (`admin-portal`/`psa`/`kb-docs`/`other`). Requires the native
-     `better-sqlite3` module, rebuilt via `npm run rebuild` — wrapped in a
-     `try/catch` at require time so a missing/unbuilt module makes
-     browser-history capture silently no-op rather than crashing the app.
+     `better-sqlite3` module, rebuilt automatically via `postinstall`'s
+     `electron-builder install-app-deps` call — wrapped in a `try/catch` at
+     require time so a missing/unbuilt module makes browser-history capture
+     silently no-op rather than crashing the app.
    - **Scrubbing** (`lib/scrub-timeline.ts`) — masks GUID-shaped tenant/
      object IDs, emails, password/username/secret assignments, API-key-like
      tokens, and configured client names. Applied to every activity-timeline
@@ -192,7 +203,7 @@ through a `contextBridge`-exposed `window.cardonetCapture` API.
 
 7. **State machine** — `screen` (`work`/`settings`/`templates`) and, within
    work, `stage` (`ready → countdown → recording → review → processing →
-   sent`) are React state in `App.tsx`, mirrored onto
+sent`) are React state in `App.tsx`, mirrored onto
    `document.body.dataset.screen`/`.stage` via `useEffect` so CSS visibility
    keeps working exactly as before the port.
 
@@ -280,8 +291,8 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
 - **Always scrub OCR text before it reaches a model.** `keyframes[i].ocrText`
   must be passed through `scrubText()` immediately after `runOCR()` returns.
 - **Redaction masking is destructive and must run on the full-res canvas
-  *before* downscaling.** Pipeline order is fixed: union auto + user masks
-  → `fillRect` them on a full-res copy of the canvas → *then* downscale.
+  _before_ downscaling.** Pipeline order is fixed: union auto + user masks
+  → `fillRect` them on a full-res copy of the canvas → _then_ downscale.
   Never mask after downscaling, never rely on a floating DOM overlay to
   hide pixels. Keep `lib/redact.ts` as the single shared implementation and
   keep `npm test` (`test/mask-verify.html`) green.
@@ -292,7 +303,7 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
   light send-objects are built, and on discard/new.
 - PSReadLine history has no per-command timestamp — diffed terminal lines
   are bucketed at the recording's start time.
-- Commands run *inside* an RDP or other remote session are invisible to
+- Commands run _inside_ an RDP or other remote session are invisible to
   local capture; only that the remote-session window was focused (and for
   how long) is visible.
 - `events-capture.ts`'s `require('better-sqlite3')` is wrapped in
@@ -300,7 +311,7 @@ paths are always built via `new URL('vendor/tesseract/...', document.baseURI)`
 - Summaries are saved to
   `%USERPROFILE%\Documents\CardonetCapture\ticket-<id>-<timestamp>.txt` (no
   date/time in the note body or header). Image data still leaves the
-  device when Claude is selected. Region masks *are* burned out of the
+  device when Claude is selected. Region masks _are_ burned out of the
   sent pixels, so masked regions never reach Azure — but any
   **unmasked** pixels in a frame still leave the device with a Claude
   call. If a credential is visible on screen, mask it in the review stage
@@ -322,6 +333,7 @@ per-phase log, including deviations and real bugs found along the way); the
 legacy `main.js`/`main/events-capture.js`/`renderer/*` files no longer
 exist. Two rules from that run stay in force permanently, independent of
 the migration itself:
+
 - Redaction is safety-critical. `npm test` (mask-verify) must pass before
   any change to `lib/redact.ts` or the masking pipeline ships.
 - Do not upgrade `electron`, `better-sqlite3`, or `tesseract.js` without a

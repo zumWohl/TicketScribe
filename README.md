@@ -15,8 +15,8 @@ Hidden regions are removed from the pixels before anything is sent, and nothing 
 ## Install and run
 
 ```bash
-npm install          # install dependencies (run once) -- also vendors tesseract's OCR assets
-npm run rebuild      # rebuild better-sqlite3 for Electron's ABI (needed for browser-history capture)
+npm install          # install dependencies -- also vendors tesseract's OCR assets and
+                      # rebuilds better-sqlite3 for Electron's ABI (postinstall)
 npm start            # launch the app (hot reload)
 ```
 
@@ -29,9 +29,11 @@ npm test             # pixel-level check that redaction masking is destructive
 npm run typecheck    # TypeScript, no emit
 npm run test:unit    # vitest
 npm run test:e2e     # Playwright end-to-end tests
+npm run rebuild      # force-rebuild better-sqlite3 manually (postinstall already does this;
+                      # only needed if a node_modules reinstall or ABI mismatch leaves it stale)
 ```
 
-`npm run rebuild` is only needed for the optional browser-history activity source. If you skip it, the app still runs and browser capture just does nothing.
+`better-sqlite3` is only needed for the optional browser-history activity source. If the rebuild ever fails or is skipped, the app still runs and browser capture just does nothing.
 
 ## How it works
 
@@ -71,14 +73,13 @@ Open Settings in the app. The summary model choice and the local-model fields be
 - Summary model.
 - Ollama URL, vision model, and text model.
 - Change threshold (0 to 10): how much a frame must change to be kept as a keyframe. Lower keeps more frames, higher
-keeps fewer.
+  keeps fewer.
 - Activity capture toggles (window, terminal, transcript, browser).
 - Client names to redact (comma-separated).
 
 Claude (routed through Azure) has no Settings UI by design: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, and `AZURE_OPENAI_KEY` are operator-configured environment variables, set once for the deployment rather than typed in by each technician.
 
 Generated notes are written to `%USERPROFILE%\Documents\CardonetCapture\`.
-
 
 ## Notes and limitations
 

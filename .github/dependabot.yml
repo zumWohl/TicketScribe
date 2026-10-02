@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    ignore:
+      # typescript-eslint cannot parse TypeScript >=7 (hard error, not just a
+      # peer-range warning) -- typescript is pinned to ~6.0.3 here
+      # specifically so `npm run lint` works. Remove this ignore once
+      # https://github.com/typescript-eslint/typescript-eslint/issues/10940
+      # (tracking TS7/tsgo support) lands, then move back to a current
+      # TypeScript release across the project.
+      - dependency-name: 'typescript'
+        versions: ['>=7.0.0']

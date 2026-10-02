@@ -84,11 +84,18 @@ function report(payload: unknown) {
 window.addEventListener('error', e => {
   report({ pass: false, error: `window.onerror: ${e.message}`, source: e.filename, lineno: e.lineno });
 });
-window.addEventListener('unhandledrejection', e => {
-  report({ pass: false, error: `unhandledrejection: ${String(e.reason && e.reason.stack || e.reason)}` });
+function errorDetail(reason: unknown): string {
+  return reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+}
+
+window.addEventListener('unhandledrejection', (e: PromiseRejectionEvent) => {
+  report({ pass: false, error: `unhandledrejection: ${errorDetail(e.reason)}` });
 });
-setTimeout(() => report({ pass: false, error: 'main() did not settle within 20s (likely hung inside the worker)' }), 20000);
+setTimeout(
+  () => report({ pass: false, error: 'main() did not settle within 20s (likely hung inside the worker)' }),
+  20000,
+);
 
 main()
   .then(payload => report(payload))
-  .catch(err => report({ pass: false, error: String((err && err.stack) || err) }));
+  .catch((err: unknown) => report({ pass: false, error: errorDetail(err) }));

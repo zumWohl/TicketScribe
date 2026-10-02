@@ -17,7 +17,7 @@
     "test:ocr:dev": "electron test/run-ocr-verify-dev-server.js",
     "predist": "npm run vendor:tesseract",
     "dist": "electron-vite build && electron-builder --win nsis --x64 --publish never",
-    "postinstall": "node scripts/vendor-tesseract.js",
+    "postinstall": "node scripts/vendor-tesseract.js && electron-builder install-app-deps",
     "vendor:tesseract": "node scripts/vendor-tesseract.js",
     "prebuild:vite": "npm run vendor:tesseract",
     "predev:vite": "npm run vendor:tesseract",
@@ -25,10 +25,24 @@
     "build:vite": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:unit": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{js,mjs,cjs,json,md,yml,yaml,css}": [
+      "prettier --write"
+    ]
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
+    "@eslint/js": "^9.39.5",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/jsdom": "^30.0.0",
@@ -41,15 +55,23 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "husky": "^9.1.7",
     "jsdom": "^30.1.1",
+    "lint-staged": "^17.6.0",
     "pixelmatch": "^7.2.0",
     "playwright": "^1.63.0",
     "pngjs": "^7.0.0",
+    "prettier": "^3.9.9",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "tesseract.js": "^5.1.1",
-    "typescript": "^7.0.2",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.0",
     "vite": "^7.3.6",
     "vitest": "^5.0.3"
   },
